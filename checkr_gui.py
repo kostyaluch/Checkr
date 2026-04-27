@@ -14,12 +14,14 @@ import os
 import io
 import tempfile
 import re
+import time
 from pathlib import Path
 from contextlib import redirect_stdout
 
 try:
     from flask import Flask, render_template_string, request, jsonify, send_file
     from werkzeug.utils import secure_filename
+    from werkzeug.exceptions import RequestEntityTooLarge
 except ImportError:
     print("Помилка: не вдалося імпортувати Flask або werkzeug.", file=sys.stderr)
     print("Встановіть їх командою: pip install Flask", file=sys.stderr)
@@ -40,6 +42,15 @@ app.config['UPLOAD_FOLDER'] = os.path.join(tempfile.gettempdir(), 'checkr_upload
 
 # Створюємо директорію для завантажень, якщо вона не існує
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def handle_file_too_large(e):
+    """Обробка помилки перевищення розміру файлу."""
+    return jsonify({
+        'success': False,
+        'error': 'Файл завеликий. Максимальний розмір: 50MB'
+    }), 413
 
 
 # HTML шаблон для інтерфейсу
@@ -368,12 +379,17 @@ def validate():
     
     try:
         # Очищаємо ім'я файлу для безпеки
-        safe_filename = secure_filename(file.filename)
-        if not safe_filename:
+        safe_filename_base = secure_filename(file.filename)
+        if not safe_filename_base:
             return jsonify({'success': False, 'error': 'Некоректне ім\'я файлу'})
         
+        # Додаємо timestamp для унікальності імені файлу та запобігання перезапису
+        timestamp = str(int(time.time() * 1000))
+        name_parts = Path(safe_filename_base).stem, Path(safe_filename_base).suffix
+        unique_filename = f"{name_parts[0]}_{timestamp}{name_parts[1]}"
+        
         # Зберігаємо завантажений файл
-        input_path = Path(app.config['UPLOAD_FOLDER']) / safe_filename
+        input_path = Path(app.config['UPLOAD_FOLDER']) / unique_filename
         file.save(str(input_path))
         
         # Створюємо ім'я вихідного файлу
@@ -426,8 +442,11 @@ def download(download_id):
     except (ValueError, OSError):
         return "Некоректний шлях", 400
     
-    # Після успішного завантаження видаляємо файл зі словника
-    # (але залишаємо файл на диску для можливого повторного завантаження)
+    # Видаляємо запис зі словника після першого завантаження
+    # Примітка: файли залишаються на диску для можливого повторного використання
+    # але видаляються зі словника для обмеження споживання пам'яті
+    del results_storage[download_id]
+    
     return send_file(file_path, as_attachment=True)
 
 
