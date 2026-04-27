@@ -15,6 +15,8 @@ import io
 import tempfile
 import re
 import time
+import webbrowser
+import threading
 from pathlib import Path
 from contextlib import redirect_stdout
 
@@ -378,6 +380,9 @@ def validate():
         })
     
     try:
+        # Зберігаємо оригінальне розширення перед очищенням імені файлу
+        original_ext = Path(file.filename).suffix.lower()
+        
         # Очищаємо ім'я файлу для безпеки
         safe_filename_base = secure_filename(file.filename)
         if not safe_filename_base:
@@ -385,8 +390,10 @@ def validate():
         
         # Додаємо timestamp для унікальності імені файлу та запобігання перезапису
         timestamp = str(int(time.time() * 1000))
-        name_parts = Path(safe_filename_base).stem, Path(safe_filename_base).suffix
-        unique_filename = f"{name_parts[0]}_{timestamp}{name_parts[1]}"
+        # Використовуємо оригінальне розширення, якщо secure_filename його видалив
+        safe_ext = Path(safe_filename_base).suffix or original_ext
+        safe_stem = Path(safe_filename_base).stem
+        unique_filename = f"{safe_stem}_{timestamp}{safe_ext}"
         
         # Зберігаємо завантажений файл
         input_path = Path(app.config['UPLOAD_FOLDER']) / unique_filename
@@ -456,10 +463,19 @@ def main():
     print("🔍 Checkr — Валідація товарного фіду e-commerce")
     print("=" * 70)
     print("\n✅ Сервер запущено!")
-    print("🌐 Відкрийте браузер за адресою: http://localhost:5000")
+    print("🌐 Відкриваємо браузер за адресою: http://localhost:5000")
     print("\n💡 Для зупинки сервера натисніть Ctrl+C")
     print("⚠️  УВАГА: Максимальний розмір файлу - 50MB\n")
     print("=" * 70 + "\n")
+    
+    # Відкриваємо браузер автоматично після короткої затримки
+    def open_browser():
+        time.sleep(1.5)  # Даємо серверу час запуститися
+        webbrowser.open('http://localhost:5000')
+    
+    browser_thread = threading.Thread(target=open_browser)
+    browser_thread.daemon = True
+    browser_thread.start()
     
     # Прив'язуємося до localhost (127.0.0.1) для безпеки
     app.run(host='127.0.0.1', port=5000, debug=False)
