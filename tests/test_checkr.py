@@ -455,7 +455,7 @@ class TestReadInputFile:
 
 
 class TestValidateFeed:
-    def _make_csv(self, tmp_path: Path, rows: list[dict]) -> str:
+    def make_csv(self, tmp_path: Path, rows: list[dict]) -> str:
         """Допоміжний метод: створює тимчасовий CSV-файл."""
         df = pd.DataFrame(rows)
         csv_path = str(tmp_path / "input.csv")
@@ -463,7 +463,7 @@ class TestValidateFeed:
         return csv_path
 
     def test_creates_output_file(self, tmp_path):
-        csv_path = self._make_csv(tmp_path, [
+        csv_path = self.make_csv(tmp_path, [
             {"Название": "Ноутбук 512 ГБ SSD", "Объём SSD;115411": "512 ГБ"},
         ])
         out = str(tmp_path / "result.xlsx")
@@ -471,7 +471,7 @@ class TestValidateFeed:
         assert Path(out).exists()
 
     def test_no_errors_for_matching_values(self, tmp_path):
-        csv_path = self._make_csv(tmp_path, [
+        csv_path = self.make_csv(tmp_path, [
             {"Название": "Ноутбук 512 ГБ SSD", "Объём SSD;115411": "512 ГБ"},
         ])
         out = str(tmp_path / "result.xlsx")
@@ -480,7 +480,7 @@ class TestValidateFeed:
         assert df["Помилки"].iloc[0] == ""
 
     def test_detects_ssd_conflict(self, tmp_path):
-        csv_path = self._make_csv(tmp_path, [
+        csv_path = self.make_csv(tmp_path, [
             {
                 "Название": "Ноутбук 128 ГБ SSD",
                 "Краткое описание": "Ноутбук із 256 ГБ SSD",
@@ -493,7 +493,7 @@ class TestValidateFeed:
         assert "Конфлікт SSD" in df["Помилки"].iloc[0]
 
     def test_detects_ram_conflict(self, tmp_path):
-        csv_path = self._make_csv(tmp_path, [
+        csv_path = self.make_csv(tmp_path, [
             {
                 "Название": "Ноутбук 4 GB RAM",
                 "Объем установленной оперативной памяти;20863": "32 GB",
@@ -504,7 +504,7 @@ class TestValidateFeed:
         assert "Конфлікт RAM" in df["Помилки"].iloc[0]
 
     def test_detects_conflict_in_html_description(self, tmp_path):
-        csv_path = self._make_csv(tmp_path, [
+        csv_path = self.make_csv(tmp_path, [
             {
                 "Название": "Ноутбук ASUS",
                 "Описание;1": "<p>Ноутбук із <b>128 ГБ</b> SSD</p>",
@@ -516,7 +516,7 @@ class TestValidateFeed:
         assert "Конфлікт SSD" in df["Помилки"].iloc[0]
 
     def test_multiple_conflicts_joined_by_pipe(self, tmp_path):
-        csv_path = self._make_csv(tmp_path, [
+        csv_path = self.make_csv(tmp_path, [
             {
                 "Название": "Ноутбук 128 ГБ SSD 4 GB RAM",
                 "Объём SSD;115411": "512 ГБ",
@@ -531,7 +531,7 @@ class TestValidateFeed:
         assert " | " in errors
 
     def test_no_conflict_when_text_has_no_memory(self, tmp_path):
-        csv_path = self._make_csv(tmp_path, [
+        csv_path = self.make_csv(tmp_path, [
             {
                 "Название": "Ноутбук ASUS VivoBook",
                 "Краткое описание": "Потужний тонкий ноутбук",
@@ -543,7 +543,7 @@ class TestValidateFeed:
         assert df["Помилки"].iloc[0] == ""
 
     def test_multiple_rows_only_conflicting_marked(self, tmp_path):
-        csv_path = self._make_csv(tmp_path, [
+        csv_path = self.make_csv(tmp_path, [
             # Рядок 0: без конфлікту
             {
                 "Название": "Ноутбук 512 ГБ SSD",
@@ -561,7 +561,7 @@ class TestValidateFeed:
         assert df["Помилки"].iloc[1] != ""
 
     def test_output_xlsx_has_pomylky_column(self, tmp_path):
-        csv_path = self._make_csv(tmp_path, [
+        csv_path = self.make_csv(tmp_path, [
             {"Название": "Ноутбук", "Объём SSD;115411": "512 ГБ"},
         ])
         out = str(tmp_path / "result.xlsx")

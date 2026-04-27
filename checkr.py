@@ -557,7 +557,9 @@ def validate_feed(input_file: str, output_file: str) -> pd.DataFrame:
     # ключ = (df_row_index, column_name), значення = True (для унікальності)
     conflict_cells: dict[tuple[int, str], bool] = {}
 
-    # Обробляємо кожен рядок товару
+    # Обробляємо кожен рядок товару.
+    # Примітка: iterrows() зручний для складної рядкової логіки, але для дуже
+    # великих фідів (>100k рядків) розгляньте можливість рефакторингу на df.apply().
     for idx, row in df.iterrows():
         row_errors: list[str] = []
 
