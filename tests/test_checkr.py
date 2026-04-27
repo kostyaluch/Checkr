@@ -617,9 +617,15 @@ class TestCommandLine:
         assert result.returncode == 0, f"Помилка: {result.stderr}"
 
         # Перевіряємо, що створився файл з автоматичною назвою
+        # Файл має бути створений у тій же директорії, що й вхідний файл
         expected_output = tmp_path / "test_input_result.xlsx"
         assert expected_output.exists(), f"Вихідний файл не створено: {expected_output}"
 
-        # Перевіряємо вміст
-        df_out = pd.read_excel(expected_output)
-        assert "Помилки" in df_out.columns
+        try:
+            # Перевіряємо вміст
+            df_out = pd.read_excel(expected_output)
+            assert "Помилки" in df_out.columns
+        finally:
+            # Видаляємо створений файл після тесту
+            if expected_output.exists():
+                expected_output.unlink()
