@@ -585,3 +585,41 @@ class TestValidateFeed:
             assert errors_count > 0, "Зразкові дані повинні містити конфлікти"
         finally:
             os.unlink(out)
+
+
+# ===========================================================================
+# Тести командного рядка
+# ===========================================================================
+
+
+class TestCommandLine:
+    """Тести для main() та аргументів командного рядка."""
+
+    def test_main_with_optional_output(self, tmp_path):
+        """Перевірка, що main() працює з опціональним аргументом output."""
+        import subprocess
+        import sys
+
+        csv_path = tmp_path / "test_input.csv"
+        df = pd.DataFrame([
+            {"Название": "Ноутбук 512 ГБ SSD", "Объём SSD;115411": "512 ГБ"},
+        ])
+        df.to_csv(csv_path, index=False, encoding="utf-8")
+
+        # Запускаємо без вказання вихідного файлу
+        result = subprocess.run(
+            [sys.executable, "checkr.py", str(csv_path)],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+        )
+
+        assert result.returncode == 0, f"Помилка: {result.stderr}"
+
+        # Перевіряємо, що створився файл з автоматичною назвою
+        expected_output = tmp_path / "test_input_result.xlsx"
+        assert expected_output.exists(), f"Вихідний файл не створено: {expected_output}"
+
+        # Перевіряємо вміст
+        df_out = pd.read_excel(expected_output)
+        assert "Помилки" in df_out.columns
