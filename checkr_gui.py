@@ -42,6 +42,9 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
 # Використовуємо системну тимчасову директорію для кросплатформеності
 app.config['UPLOAD_FOLDER'] = os.path.join(tempfile.gettempdir(), 'checkr_uploads')
 
+# Константа затримки для відкриття браузера
+BROWSER_OPEN_DELAY_SECONDS = 1.5
+
 # Створюємо директорію для завантажень, якщо вона не існує
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
@@ -392,7 +395,7 @@ def validate():
         timestamp = str(int(time.time() * 1000))
         # Використовуємо оригінальне розширення, якщо secure_filename його видалив
         safe_ext = Path(safe_filename_base).suffix or original_ext
-        safe_stem = Path(safe_filename_base).stem
+        safe_stem = Path(safe_filename_base).stem or 'file'
         unique_filename = f"{safe_stem}_{timestamp}{safe_ext}"
         
         # Зберігаємо завантажений файл
@@ -470,7 +473,7 @@ def main():
     
     # Відкриваємо браузер автоматично після короткої затримки
     def open_browser():
-        time.sleep(1.5)  # Даємо серверу час запуститися
+        time.sleep(BROWSER_OPEN_DELAY_SECONDS)  # Даємо серверу час запуститися
         webbrowser.open('http://localhost:5000')
     
     browser_thread = threading.Thread(target=open_browser)
