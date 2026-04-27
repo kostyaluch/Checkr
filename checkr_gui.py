@@ -42,7 +42,7 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
 # Використовуємо системну тимчасову директорію для кросплатформеності
 app.config['UPLOAD_FOLDER'] = os.path.join(tempfile.gettempdir(), 'checkr_uploads')
 
-# Константа затримки для відкриття браузера
+# Константа затримки для відкриття браузера (у секундах, може бути дробовим значенням)
 BROWSER_OPEN_DELAY_SECONDS = 1.5
 
 # Створюємо директорію для завантажень, якщо вона не існує
@@ -395,7 +395,7 @@ def validate():
         timestamp = str(int(time.time() * 1000))
         # Використовуємо оригінальне розширення, якщо secure_filename його видалив
         safe_ext = Path(safe_filename_base).suffix or original_ext
-        safe_stem = Path(safe_filename_base).stem or 'file'
+        safe_stem = Path(safe_filename_base).stem or 'upload'
         unique_filename = f"{safe_stem}_{timestamp}{safe_ext}"
         
         # Зберігаємо завантажений файл
