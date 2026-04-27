@@ -17,6 +17,10 @@ from checkr import (
     clean_html,
     extract_memory_matches,
     extract_memory_values,
+    extract_resolution_matches,
+    extract_screen_diagonal_matches,
+    extract_value_list_matches,
+    extract_weight_matches,
     find_column,
     normalize_memory_value,
     read_input_file,
@@ -203,8 +207,222 @@ class TestExtractMemoryValues:
 
 
 # ===========================================================================
-# Тести Модуля 3: find_column
+# Тести Модуля 2b: extract_screen_diagonal_matches
 # ===========================================================================
+
+
+class TestExtractScreenDiagonalMatches:
+    def test_inch_symbol(self):
+        matches = extract_screen_diagonal_matches('Ноутбук 15.6" IPS')
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == '15.6"'
+
+    def test_unicode_inch(self):
+        matches = extract_screen_diagonal_matches("Дисплей 14″")
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == '14"'
+
+    def test_dyuim_word(self):
+        matches = extract_screen_diagonal_matches("Екран 13.3 дюймів")
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == '13.3"'
+
+    def test_inch_word(self):
+        matches = extract_screen_diagonal_matches("15.6-inch display")
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == '15.6"'
+
+    def test_comma_decimal(self):
+        matches = extract_screen_diagonal_matches('15,6"')
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == '15.6"'
+
+    def test_integer_diagonal(self):
+        matches = extract_screen_diagonal_matches('14" ноутбук')
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == '14"'
+
+    def test_multiple_diagonals(self):
+        matches = extract_screen_diagonal_matches('15.6" і 14" дисплеї')
+        norms = [n for _, n in matches]
+        assert '15.6"' in norms
+        assert '14"' in norms
+
+    def test_no_unit_no_match(self):
+        # Без одиниці виміру не має збігу (уникаємо хибних спрацювань)
+        assert extract_screen_diagonal_matches("Ноутбук 15.6 IPS") == []
+
+    def test_empty_string(self):
+        assert extract_screen_diagonal_matches("") == []
+
+    def test_none_input(self):
+        assert extract_screen_diagonal_matches(None) == []
+
+    def test_trailing_zero_removed(self):
+        matches = extract_screen_diagonal_matches('15.60"')
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == '15.6"'
+
+
+# ===========================================================================
+# Тести Модуля 2b: extract_weight_matches
+# ===========================================================================
+
+
+class TestExtractWeightMatches:
+    def test_kg_cyrillic(self):
+        matches = extract_weight_matches("Вага: 1.5 кг")
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == "1.5кг"
+
+    def test_kg_latin(self):
+        matches = extract_weight_matches("Weight: 2.3kg")
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == "2.3кг"
+
+    def test_comma_decimal(self):
+        matches = extract_weight_matches("1,8 кг")
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == "1.8кг"
+
+    def test_integer_weight(self):
+        matches = extract_weight_matches("2 кг")
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == "2кг"
+
+    def test_no_match_without_unit(self):
+        assert extract_weight_matches("Ноутбук 1.5") == []
+
+    def test_does_not_match_gb(self):
+        # "GB" не має сприйматися як вага
+        assert extract_weight_matches("512 GB SSD") == []
+
+    def test_empty_string(self):
+        assert extract_weight_matches("") == []
+
+    def test_none_input(self):
+        assert extract_weight_matches(None) == []
+
+    def test_trailing_zero_removed(self):
+        matches = extract_weight_matches("1.50 кг")
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == "1.5кг"
+
+
+# ===========================================================================
+# Тести Модуля 2b: extract_resolution_matches
+# ===========================================================================
+
+
+class TestExtractResolutionMatches:
+    def test_numerical_x(self):
+        matches = extract_resolution_matches("Дисплей 1920x1080")
+        norms = [n for _, n in matches]
+        assert "1920x1080" in norms
+
+    def test_numerical_unicode_x(self):
+        matches = extract_resolution_matches("3840×2160")
+        norms = [n for _, n in matches]
+        assert "3840x2160" in norms
+
+    def test_fhd_alias(self):
+        matches = extract_resolution_matches("Екран FHD")
+        norms = [n for _, n in matches]
+        assert "1920x1080" in norms
+
+    def test_full_hd_alias(self):
+        matches = extract_resolution_matches("Full HD дисплей")
+        norms = [n for _, n in matches]
+        assert "1920x1080" in norms
+
+    def test_4k_alias(self):
+        matches = extract_resolution_matches("Монітор 4K")
+        norms = [n for _, n in matches]
+        assert "3840x2160" in norms
+
+    def test_qhd_alias(self):
+        matches = extract_resolution_matches("QHD панель")
+        norms = [n for _, n in matches]
+        assert "2560x1440" in norms
+
+    def test_hd_alias(self):
+        matches = extract_resolution_matches("HD екран")
+        norms = [n for _, n in matches]
+        assert "1366x768" in norms
+
+    def test_full_hd_preferred_over_hd(self):
+        # "Full HD" не має повертати окремий збіг для "HD"
+        matches = extract_resolution_matches("Full HD дисплей")
+        norms = [n for _, n in matches]
+        assert "1920x1080" in norms
+        assert norms.count("1366x768") == 0
+
+    def test_empty_string(self):
+        assert extract_resolution_matches("") == []
+
+    def test_none_input(self):
+        assert extract_resolution_matches(None) == []
+
+    def test_no_resolution_in_text(self):
+        assert extract_resolution_matches("Просто текст") == []
+
+
+# ===========================================================================
+# Тести Модуля 2b: extract_value_list_matches
+# ===========================================================================
+
+
+class TestExtractValueListMatches:
+    MATRIX_TYPES = ["IPS", "TN", "VA", "OLED", "AMOLED"]
+
+    def test_finds_ips(self):
+        matches = extract_value_list_matches("Матриця IPS, тонкі рамки", self.MATRIX_TYPES)
+        norms = [n for _, n in matches]
+        assert "IPS" in norms
+
+    def test_case_insensitive(self):
+        matches = extract_value_list_matches("ips матриця", self.MATRIX_TYPES)
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == "IPS"
+
+    def test_finds_oled(self):
+        matches = extract_value_list_matches("OLED дисплей", self.MATRIX_TYPES)
+        norms = [n for _, n in matches]
+        assert "OLED" in norms
+
+    def test_amoled_before_oled(self):
+        # "AMOLED" довший за "OLED" — має знаходитися першим, не дублювати "OLED"
+        matches = extract_value_list_matches("AMOLED екран", self.MATRIX_TYPES)
+        norms = [n for _, n in matches]
+        assert "AMOLED" in norms
+
+    def test_no_match(self):
+        assert extract_value_list_matches("Звичайний текст", self.MATRIX_TYPES) == []
+
+    def test_empty_string(self):
+        assert extract_value_list_matches("", self.MATRIX_TYPES) == []
+
+    def test_empty_valid_values(self):
+        assert extract_value_list_matches("IPS матриця", []) == []
+
+    def test_none_input(self):
+        assert extract_value_list_matches(None, self.MATRIX_TYPES) == []
+
+
+
 
 
 class TestFindColumn:
@@ -392,8 +610,230 @@ class TestCheckConflicts:
 
 
 # ===========================================================================
-# Тести Модуля 6: read_input_file
+# Тести Модуля 5: check_conflicts — нові типи перевірок
 # ===========================================================================
+
+
+class TestCheckConflictsNewTypes:
+    """Тести логіки виявлення конфліктів для нових checker_type."""
+
+    # --- screen_diagonal ---
+
+    def _diagonal_rule(self) -> dict:
+        return {
+            "label": "Діагональ екрана",
+            "checker_type": "screen_diagonal",
+            "char_hints": ["Діагональ"],
+            "text_hints": ["Название"],
+        }
+
+    def test_diagonal_no_conflict_matching(self):
+        row = pd.Series({
+            "Название": 'Ноутбук 15.6" IPS',
+            "Діагональ": "15.6",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._diagonal_rule())
+        assert error == ""
+
+    def test_diagonal_conflict(self):
+        row = pd.Series({
+            "Название": '14" ноутбук',
+            "Діагональ": "15.6",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._diagonal_rule())
+        assert error != ""
+        assert "Конфлікт Діагональ екрана" in error
+        assert "Діагональ" in cols
+
+    def test_diagonal_no_mention_in_text(self):
+        row = pd.Series({
+            "Название": "Ноутбук ASUS VivoBook",
+            "Діагональ": "15.6",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._diagonal_rule())
+        assert error == ""
+
+    def test_diagonal_char_col_missing(self):
+        row = pd.Series({"Название": '15.6" ноутбук'})
+        error, cols = check_conflicts(row, list(row.index), self._diagonal_rule())
+        assert error == ""
+
+    # --- weight ---
+
+    def _weight_rule(self) -> dict:
+        return {
+            "label": "Вага",
+            "checker_type": "weight",
+            "char_hints": ["Вага"],
+            "text_hints": ["Название"],
+        }
+
+    def test_weight_no_conflict(self):
+        row = pd.Series({
+            "Название": "Ноутбук вагою 1.5 кг",
+            "Вага": "1.5 кг",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._weight_rule())
+        assert error == ""
+
+    def test_weight_conflict(self):
+        row = pd.Series({
+            "Название": "Ноутбук вагою 2.3 кг",
+            "Вага": "1.5 кг",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._weight_rule())
+        assert error != ""
+        assert "Конфлікт Вага" in error
+
+    def test_weight_bare_number_in_char_col(self):
+        # Колонка характеристики містить просте число (без "кг")
+        row = pd.Series({
+            "Название": "Ноутбук вагою 1.5 кг",
+            "Вага": "1.5",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._weight_rule())
+        assert error == ""
+
+    # --- resolution ---
+
+    def _resolution_rule(self) -> dict:
+        return {
+            "label": "Роздільна здатність",
+            "checker_type": "resolution",
+            "char_hints": ["Розд"],
+            "text_hints": ["Название"],
+        }
+
+    def test_resolution_no_conflict_fhd(self):
+        row = pd.Series({
+            "Название": "Ноутбук FHD дисплей",
+            "Розд": "1920x1080",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._resolution_rule())
+        assert error == ""
+
+    def test_resolution_conflict(self):
+        row = pd.Series({
+            "Название": "Ноутбук HD екран",
+            "Розд": "1920x1080",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._resolution_rule())
+        assert error != ""
+        assert "Конфлікт Роздільна здатність" in error
+
+    def test_resolution_alias_in_char_col(self):
+        # Колонка характеристики містить псевдонім "FHD"
+        row = pd.Series({
+            "Название": "Ноутбук 1920x1080",
+            "Розд": "FHD",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._resolution_rule())
+        assert error == ""
+
+    # --- value_list ---
+
+    def _matrix_rule(self) -> dict:
+        return {
+            "label": "Тип матриці",
+            "checker_type": "value_list",
+            "char_hints": ["Матриця"],
+            "text_hints": ["Название"],
+            "valid_values": ["IPS", "TN", "VA", "OLED"],
+        }
+
+    def test_value_list_no_conflict(self):
+        row = pd.Series({
+            "Название": "Ноутбук IPS матриця",
+            "Матриця": "IPS",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._matrix_rule())
+        assert error == ""
+
+    def test_value_list_conflict(self):
+        row = pd.Series({
+            "Название": "Ноутбук TN матриця",
+            "Матриця": "IPS",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._matrix_rule())
+        assert error != ""
+        assert "Конфлікт Тип матриці" in error
+
+    def test_value_list_no_mention(self):
+        row = pd.Series({
+            "Название": "Ноутбук без згадки типу",
+            "Матриця": "IPS",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._matrix_rule())
+        assert error == ""
+
+    def test_value_list_case_insensitive(self):
+        row = pd.Series({
+            "Название": "Ноутбук ips матриця",
+            "Матриця": "IPS",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._matrix_rule())
+        assert error == ""
+
+
+# ===========================================================================
+# Тести validation_rules.py
+# ===========================================================================
+
+
+class TestValidationRules:
+    """Тести структури VALIDATION_RULES."""
+
+    def test_has_ssd_rule(self):
+        labels = [r["label"] for r in VALIDATION_RULES]
+        assert "SSD" in labels
+
+    def test_has_ram_rule(self):
+        labels = [r["label"] for r in VALIDATION_RULES]
+        assert "RAM" in labels
+
+    def test_has_screen_diagonal_rule(self):
+        labels = [r["label"] for r in VALIDATION_RULES]
+        assert "Діагональ екрана" in labels
+
+    def test_has_weight_rule(self):
+        labels = [r["label"] for r in VALIDATION_RULES]
+        assert "Вага" in labels
+
+    def test_has_resolution_rule(self):
+        labels = [r["label"] for r in VALIDATION_RULES]
+        assert "Роздільна здатність" in labels
+
+    def test_has_matrix_type_rule(self):
+        labels = [r["label"] for r in VALIDATION_RULES]
+        assert "Тип матриці" in labels
+
+    def test_has_gpu_type_rule(self):
+        labels = [r["label"] for r in VALIDATION_RULES]
+        assert "Тип відеокарти" in labels
+
+    def test_all_rules_have_required_fields(self):
+        for rule in VALIDATION_RULES:
+            assert "label" in rule, f"Rule missing 'label': {rule}"
+            assert "checker_type" in rule, f"Rule missing 'checker_type': {rule}"
+            assert "char_hints" in rule, f"Rule missing 'char_hints': {rule}"
+            assert "text_hints" in rule, f"Rule missing 'text_hints': {rule}"
+
+    def test_value_list_rules_have_valid_values(self):
+        for rule in VALIDATION_RULES:
+            if rule.get("checker_type") == "value_list":
+                assert "valid_values" in rule, (
+                    f"value_list rule missing 'valid_values': {rule['label']}"
+                )
+                assert len(rule["valid_values"]) > 0
+
+    def test_memory_rules_have_memory_checker_type(self):
+        ssd_rule = next(r for r in VALIDATION_RULES if r["label"] == "SSD")
+        ram_rule = next(r for r in VALIDATION_RULES if r["label"] == "RAM")
+        assert ssd_rule["checker_type"] == "memory"
+        assert ram_rule["checker_type"] == "memory"
+
+
+
 
 
 class TestReadInputFile:
@@ -586,10 +1026,60 @@ class TestValidateFeed:
         finally:
             os.unlink(out)
 
+    def test_detects_diagonal_conflict(self, tmp_path):
+        csv_path = self.make_csv(tmp_path, [
+            {
+                "Название": '14" ноутбук',
+                "Діагональ екрана": "15.6",
+            }
+        ])
+        out = str(tmp_path / "result.xlsx")
+        df = validate_feed(csv_path, out)
+        assert "Конфлікт Діагональ екрана" in df["Помилки"].iloc[0]
 
-# ===========================================================================
-# Тести командного рядка
-# ===========================================================================
+    def test_no_diagonal_conflict_when_matching(self, tmp_path):
+        csv_path = self.make_csv(tmp_path, [
+            {
+                "Название": '15.6" ноутбук',
+                "Діагональ екрана": "15.6",
+            }
+        ])
+        out = str(tmp_path / "result.xlsx")
+        df = validate_feed(csv_path, out)
+        assert df["Помилки"].iloc[0] == ""
+
+    def test_detects_matrix_conflict(self, tmp_path):
+        csv_path = self.make_csv(tmp_path, [
+            {
+                "Название": "Ноутбук з TN матрицею",
+                "Тип матриці": "IPS",
+            }
+        ])
+        out = str(tmp_path / "result.xlsx")
+        df = validate_feed(csv_path, out)
+        assert "Конфлікт Тип матриці" in df["Помилки"].iloc[0]
+
+    def test_no_matrix_conflict_when_matching(self, tmp_path):
+        csv_path = self.make_csv(tmp_path, [
+            {
+                "Название": "Ноутбук IPS дисплей",
+                "Тип матриці": "IPS",
+            }
+        ])
+        out = str(tmp_path / "result.xlsx")
+        df = validate_feed(csv_path, out)
+        assert df["Помилки"].iloc[0] == ""
+
+    def test_rules_skipped_when_column_absent(self, tmp_path):
+        # Файл без колонки діагоналі — правило "Діагональ екрана" не застосовується
+        csv_path = self.make_csv(tmp_path, [
+            {"Название": "Ноутбук", "Объём SSD;115411": "512 ГБ"},
+        ])
+        out = str(tmp_path / "result.xlsx")
+        df = validate_feed(csv_path, out)
+        assert df["Помилки"].iloc[0] == ""
+
+
 
 
 class TestCommandLine:

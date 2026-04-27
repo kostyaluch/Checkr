@@ -2,7 +2,11 @@
 
 Програма зчитує файл (CSV або Excel) зі списком товарів і знаходить
 логічні розбіжності між назвою, описами та характеристиками одного й
-того ж товару (наприклад, конфлікти об'єму SSD або оперативної пам'яті).
+того ж товару (наприклад, конфлікти об'єму SSD, оперативної пам'яті,
+діагоналі екрана, ваги, роздільної здатності, типу матриці тощо).
+
+Правила валідації зберігаються у validation_rules.py — їх легко
+розширювати, не змінюючи основну логіку програми.
 
 Використання з командного рядка:
     python checkr.py products.csv result.xlsx
@@ -18,6 +22,8 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
+
+from validation_rules import VALIDATION_RULES
 
 # ---------------------------------------------------------------------------
 # Константи: кольори для підсвітки у вихідному Excel-файлі
@@ -237,57 +243,337 @@ def find_column(columns: list[str], hint: str) -> str | None:
 
 
 # ===========================================================================
-# Модуль 4: Правила валідації
+# Модуль 2b: Пошук значень додаткових типів характеристик
 # ===========================================================================
 
-# Кожне правило — словник із ключами:
-#   "label"      : Назва характеристики для відображення у повідомленнях про помилку.
-#   "char_hints" : Список підрядків для пошуку колонки з еталонним значенням.
-#   "text_hints" : Список підрядків для пошуку текстових колонок, що перевіряються.
-#
-# Щоб ДОДАТИ нове правило (наприклад, для GPU VRAM або ємності акумулятора):
-#   1. Скопіюйте будь-який блок нижче.
-#   2. Задайте відповідні значення для "label", "char_hints" та "text_hints".
-#   3. Додайте блок до списку VALIDATION_RULES.
+
+# ---------------------------------------------------------------------------
+# Діагональ екрана
 # ---------------------------------------------------------------------------
 
-VALIDATION_RULES: list[dict] = [
-    # Правило 1: Ємність SSD-накопичувача
-    {
-        "label": "SSD",
-        "char_hints": ["Объём SSD", "Объем SSD", "Ємність SSD", "SSD"],
-        "text_hints": ["Название", "Назва", "Краткое описание", "Описание"],
-    },
+# Патерн для значень діагоналі з одиницею виміру:
+# Підтримує: 15.6", 15,6", 14 дюймів, 13.3 inch, 15.6 inches, 15.6″
+_DIAGONAL_RE = re.compile(
+    r"(?<!\d)"
+    r"(\d+(?:[.,]\d+)?)"                                    # числова частина
+    r"\s*"
+    r"(?:\"|″|дюйм(?:ів|а|и)?|-?inch(?:es)?)"              # одиниця виміру
+    r"(?!\d)",
+    re.IGNORECASE | re.UNICODE,
+)
 
-    # Правило 2: Об'єм оперативної пам'яті (RAM)
-    {
-        "label": "RAM",
-        "char_hints": [
-            "Объем установленной оперативной памяти",
-            "Об'єм оперативної пам'яті",
-            "Оперативна пам",
-            "Оперативная память",
-            "RAM",
-            "ОЗУ",
-        ],
-        "text_hints": ["Название", "Назва", "Краткое описание", "Описание"],
-    },
 
-    # --- Шаблон для нового правила: розкоментуйте та заповніть ---
-    # Правило N: Відеопам'ять GPU
-    # {
-    #     "label": "GPU VRAM",
-    #     "char_hints": ["Відеопам'ять", "Видеопамять", "Об'єм відеопам'яті", "VRAM"],
-    #     "text_hints": ["Название", "Назва", "Краткое описание", "Описание"],
-    # },
-    #
-    # Правило N: Ємність акумулятора (Вт·год)
-    # {
-    #     "label": "Battery",
-    #     "char_hints": ["Ємність акумулятора", "Ёмкость аккумулятора"],
-    #     "text_hints": ["Название", "Назва", "Краткое описание", "Описание"],
-    # },
-]
+def extract_screen_diagonal_matches(text: str) -> list[tuple[str, str]]:
+    """Знаходить усі значення діагоналі екрана у тексті.
+
+    Розпізнає форми: 15.6", 14 дюймів, 13.3-inch тощо.
+    Повертає список пар (оригінал, нормалізоване) у форматі «15.6"».
+
+    Аргументи:
+        text: Рядок, у якому шукаємо значення.
+
+    Повертає:
+        Список пар (str, str). Порожній список, якщо нічого не знайдено.
+
+    Приклад:
+        extract_screen_diagonal_matches('Ноутбук 15.6" IPS')
+        →  [('15.6"', '15.6"')]
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+    results = []
+    for m in _DIAGONAL_RE.finditer(text):
+        original = m.group(0).strip()
+        number = m.group(1).replace(",", ".")
+        if "." in number:
+            number = number.rstrip("0").rstrip(".")
+        normalized = f'{number}"'
+        results.append((original, normalized))
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Вага пристрою
+# ---------------------------------------------------------------------------
+
+# Патерн для значень ваги в кілограмах:
+# Підтримує: 1.5 кг, 2,3 кг, 1.8kg, 2.1 KG
+_WEIGHT_RE = re.compile(
+    r"(?<!\d)"
+    r"(\d+(?:[.,]\d+)?)"   # числова частина
+    r"\s*"
+    r"(кг|kg)"             # одиниця: кілограми (латиниця або кирилиця)
+    r"(?!\w)",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def extract_weight_matches(text: str) -> list[tuple[str, str]]:
+    """Знаходить усі значення ваги у тексті (кілограми).
+
+    Розпізнає форми: 1.5 кг, 2,3 кг, 1.8kg тощо.
+    Повертає список пар (оригінал, нормалізоване) у форматі «1.5кг».
+
+    Аргументи:
+        text: Рядок, у якому шукаємо значення.
+
+    Повертає:
+        Список пар (str, str). Порожній список, якщо нічого не знайдено.
+
+    Приклад:
+        extract_weight_matches("Легкий ноутбук вагою 1.5 кг")
+        →  [('1.5 кг', '1.5кг')]
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+    results = []
+    for m in _WEIGHT_RE.finditer(text):
+        original = m.group(0).strip()
+        number = m.group(1).replace(",", ".")
+        if "." in number:
+            number = number.rstrip("0").rstrip(".")
+        results.append((original, f"{number}кг"))
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Роздільна здатність екрана
+# ---------------------------------------------------------------------------
+
+# Патерн для числової роздільної здатності (NxM або N×M):
+# Підтримує: 1920x1080, 1920×1080, 3840 x 2160
+_RESOLUTION_NUM_RE = re.compile(
+    r"(\d{3,4})\s*[xхх×]\s*(\d{3,4})",
+    re.IGNORECASE,
+)
+
+# Псевдоніми роздільної здатності → нормалізована форма «ШxВ».
+# Довші рядки мають бути раніше, щоб "Full HD" знайшлося раніше "HD".
+_RESOLUTION_ALIASES: dict[str, str] = {
+    "full hd": "1920x1080",
+    "full-hd": "1920x1080",
+    "fhd": "1920x1080",
+    "ultra hd": "3840x2160",
+    "ultra-hd": "3840x2160",
+    "uhd": "3840x2160",
+    "4k": "3840x2160",
+    "qhd": "2560x1440",
+    "hd+": "1600x900",
+    "wxga+": "1600x900",
+    "wxga": "1366x768",
+    "hd": "1366x768",
+}
+
+
+def extract_resolution_matches(text: str) -> list[tuple[str, str]]:
+    """Знаходить усі значення роздільної здатності у тексті.
+
+    Розпізнає числові значення (1920x1080, 3840×2160) та псевдоніми
+    (FHD, Full HD, 4K, QHD, HD+ тощо).
+    Повертає список пар (оригінал, нормалізоване) у форматі «1920x1080».
+    Довші псевдоніми мають пріоритет над коротшими (напр. "Full HD" над "HD").
+
+    Аргументи:
+        text: Рядок, у якому шукаємо значення.
+
+    Повертає:
+        Список пар (str, str). Порожній список, якщо нічого не знайдено.
+
+    Приклад:
+        extract_resolution_matches("Дисплей FHD 1920x1080")
+        →  [('FHD', '1920x1080'), ('1920x1080', '1920x1080')]
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+
+    results: list[tuple[str, str]] = []
+    seen_norms: set[str] = set()
+    matched_ranges: list[tuple[int, int]] = []  # Вже зайняті позиції
+    text_lower = text.lower()
+
+    def _overlaps(start: int, end: int) -> bool:
+        return any(s < end and start < e for s, e in matched_ranges)
+
+    # Перевіряємо псевдоніми (від довших до коротших, щоб "Full HD" знаходилось
+    # раніше "HD" і попередні збіги не перекривалися)
+    for alias in sorted(_RESOLUTION_ALIASES, key=len, reverse=True):
+        idx = text_lower.find(alias)
+        if idx >= 0:
+            end = idx + len(alias)
+            if not _overlaps(idx, end):
+                norm = _RESOLUTION_ALIASES[alias]
+                if norm not in seen_norms:
+                    results.append((text[idx: end], norm))
+                    seen_norms.add(norm)
+                    matched_ranges.append((idx, end))
+
+    # Шукаємо числові роздільні здатності
+    for m in _RESOLUTION_NUM_RE.finditer(text):
+        if not _overlaps(m.start(), m.end()):
+            norm = f"{m.group(1)}x{m.group(2)}"
+            if norm not in seen_norms:
+                results.append((m.group(0), norm))
+                seen_norms.add(norm)
+                matched_ranges.append((m.start(), m.end()))
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Список допустимих значень (для текстових характеристик: матриця, GPU тощо)
+# ---------------------------------------------------------------------------
+
+
+def extract_value_list_matches(
+    text: str, valid_values: list[str]
+) -> list[tuple[str, str]]:
+    """Знаходить у тексті будь-яке зі списку допустимих значень.
+
+    Пошук нечутливий до регістру. Збіг визначається як входження рядка
+    valid_values[i] у текст. Довші значення перевіряються першими.
+
+    Аргументи:
+        text:         Рядок, у якому шукаємо значення.
+        valid_values: Список рядків для пошуку (наприклад, ["IPS", "TN", "VA"]).
+
+    Повертає:
+        Список пар (оригінал_у_тексті, нормалізоване_верхній_регістр).
+        Порожній список, якщо нічого не знайдено.
+
+    Приклад:
+        extract_value_list_matches("Матриця IPS, тонкі рамки", ["IPS", "TN"])
+        →  [('IPS', 'IPS')]
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+
+    text_lower = text.lower()
+    results: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    # Довші значення перевіряємо першими (щоб "Mini-LED" знаходилось раніше "LED")
+    for val in sorted(valid_values, key=len, reverse=True):
+        val_lower = val.lower()
+        if val_lower in seen:
+            continue
+        idx = text_lower.find(val_lower)
+        if idx >= 0:
+            results.append((text[idx: idx + len(val)], val.upper()))
+            seen.add(val_lower)
+
+    return results
+
+
+# ===========================================================================
+# Модуль 2c: Допоміжні функції витягування канонічного значення та диспетчер
+# ===========================================================================
+
+
+def _normalize_canonical(raw: str, rule: dict) -> str | None:
+    """Витягує нормалізоване канонічне значення з колонки характеристики.
+
+    Для кожного типу перевірки (checker_type) застосовує відповідний алгоритм.
+    Якщо колонка характеристики містить значення без одиниці виміру (наприклад,
+    "15.6" замість "15.6""), намагається витягти числову частину напряму.
+
+    Аргументи:
+        raw:  Рядок зі значенням колонки характеристики (після str().strip()).
+        rule: Словник правила з VALIDATION_RULES.
+
+    Повертає:
+        Нормалізований рядок або None, якщо значення не вдалось розпізнати.
+    """
+    checker_type = rule.get("checker_type", "memory")
+
+    if checker_type == "memory":
+        matches = extract_memory_matches(raw)
+        return matches[0][1] if matches else None
+
+    if checker_type == "screen_diagonal":
+        matches = extract_screen_diagonal_matches(raw)
+        if matches:
+            return matches[0][1]
+        # Колонка характеристики може містити просте число: "15.6"
+        bare = re.match(r"^\s*(\d+(?:[.,]\d+)?)\s*$", raw)
+        if bare:
+            number = bare.group(1).replace(",", ".")
+            if "." in number:
+                number = number.rstrip("0").rstrip(".")
+            return f'{number}"'
+        return None
+
+    if checker_type == "weight":
+        matches = extract_weight_matches(raw)
+        if matches:
+            return matches[0][1]
+        # Колонка характеристики може містити просте число: "1.5" (вважаємо кг)
+        bare = re.match(r"^\s*(\d+(?:[.,]\d+)?)\s*$", raw)
+        if bare:
+            number = bare.group(1).replace(",", ".")
+            if "." in number:
+                number = number.rstrip("0").rstrip(".")
+            return f"{number}кг"
+        return None
+
+    if checker_type == "resolution":
+        raw_lower = raw.strip().lower()
+        # Перевіряємо псевдоніми
+        if raw_lower in _RESOLUTION_ALIASES:
+            return _RESOLUTION_ALIASES[raw_lower]
+        # Перевіряємо числовий формат
+        m = _RESOLUTION_NUM_RE.search(raw)
+        if m:
+            return f"{m.group(1)}x{m.group(2)}"
+        return None
+
+    if checker_type == "value_list":
+        valid_values = rule.get("valid_values", [])
+        raw_lower = raw.strip().lower()
+        # Точний збіг (нечутливий до регістру)
+        for val in valid_values:
+            if val.lower() == raw_lower:
+                return val.upper()
+        # Часткове входження (для значень типу "Дискретна відеокарта")
+        for val in sorted(valid_values, key=len, reverse=True):
+            if val.lower() in raw_lower:
+                return val.upper()
+        return None
+
+    return None
+
+
+def _extract_for_rule(text: str, rule: dict) -> list[tuple[str, str]]:
+    """Знаходить у тексті значення відповідного типу характеристики.
+
+    Диспетчер: обирає функцію-екстрактор залежно від поля "checker_type" правила.
+
+    Аргументи:
+        text: Рядок для пошуку (вже очищений від HTML).
+        rule: Словник правила з VALIDATION_RULES.
+
+    Повертає:
+        Список пар (оригінал, нормалізоване). Порожній список, якщо нічого не знайдено.
+    """
+    checker_type = rule.get("checker_type", "memory")
+
+    if checker_type == "memory":
+        return extract_memory_matches(text)
+    if checker_type == "screen_diagonal":
+        return extract_screen_diagonal_matches(text)
+    if checker_type == "weight":
+        return extract_weight_matches(text)
+    if checker_type == "resolution":
+        return extract_resolution_matches(text)
+    if checker_type == "value_list":
+        return extract_value_list_matches(text, rule.get("valid_values", []))
+
+    return []
+
+
+# ===========================================================================
+# Модуль 4: Правила валідації (імпортуються з validation_rules.py)
+# ===========================================================================
+# VALIDATION_RULES імпортовано на початку файлу: from validation_rules import VALIDATION_RULES
 
 
 # ===========================================================================
@@ -303,11 +589,10 @@ def check_conflicts(
     """Перевіряє наявність конфліктів для одного правила в одному рядку товару.
 
     Алгоритм:
-        1. Знаходить колонку з еталонним значенням характеристики
-           (наприклад, "Объём SSD;115411").
-        2. Витягує нормалізоване еталонне значення (наприклад, "512ГБ").
+        1. Знаходить колонку з еталонним значенням характеристики.
+        2. Витягує та нормалізує еталонне значення залежно від типу checker_type.
         3. Для кожного текстового поля (після очищення від HTML) знаходить
-           значення пам'яті за допомогою regex.
+           значення того ж типу за допомогою відповідного екстрактора.
         4. Якщо у текстовому полі є значення, відмінні від еталонного —
            це конфлікт.
         5. Якщо текстове поле не містить жодного значення — пропускає
@@ -324,7 +609,7 @@ def check_conflicts(
 
     Приклад:
         При Название="Ноутбук 128ГБ SSD", Характеристика SSD="512 ГБ":
-        → ("Конфлікт SSD: Назва (128ГБ) != Характеристика ... (512ГБ)",
+        → ("Конфлікт SSD: Назва (128ГБ) != Характеристика ... (512 ГБ)",
            ["Название", "Объём SSD;115411"])
     """
     label = rule["label"]
@@ -339,17 +624,16 @@ def check_conflicts(
         # Колонка характеристики відсутня у файлі — пропускаємо правило
         return "", []
 
-    # Крок 2: Отримуємо та перевіряємо еталонне значення
+    # Крок 2: Отримуємо та нормалізуємо еталонне значення
     raw_char = row.get(char_col, "")
     if pd.isna(raw_char) or not str(raw_char).strip():
         return "", []  # Порожня характеристика — немає з чим порівнювати
 
-    char_matches = extract_memory_matches(str(raw_char))
-    if not char_matches:
-        # Характеристика заповнена, але не містить числового значення пам'яті
+    canonical_raw = str(raw_char).strip()
+    canonical_norm = _normalize_canonical(canonical_raw, rule)
+    if canonical_norm is None:
+        # Характеристика заповнена, але не містить розпізнаного значення
         return "", []
-
-    canonical_raw, canonical_norm = char_matches[0]
 
     # Крок 3: Перевіряємо кожне текстове поле
     conflict_parts: list[str] = []   # Частини тексту повідомлення про конфлікт
@@ -366,12 +650,12 @@ def check_conflicts(
         if pd.isna(raw_text) or not str(raw_text).strip():
             continue  # Порожнє поле — не конфлікт
 
-        # Очищаємо HTML та шукаємо значення пам'яті
+        # Очищаємо HTML та шукаємо значення відповідного типу
         clean_text = clean_html(str(raw_text))
-        matches = extract_memory_matches(clean_text)
+        matches = _extract_for_rule(clean_text, rule)
 
         if not matches:
-            continue  # Поле не містить згадки про пам'ять — не конфлікт
+            continue  # Поле не містить згадки про цю характеристику — не конфлікт
 
         # Крок 4: Конфлікт є, якщо канонічного значення серед знайдених немає
         found_norms = [norm for _, norm in matches]
@@ -523,12 +807,15 @@ def validate_feed(input_file: str, output_file: str) -> pd.DataFrame:
 
     Алгоритм:
         1. Зчитує вхідний файл у DataFrame.
-        2. Для кожного рядка та кожного правила з VALIDATION_RULES
-           перевіряє наявність конфліктів.
-        3. Записує знайдені помилки у нову колонку "Помилки".
-        4. Зберігає result.xlsx із підсвіченими конфліктними клітинками
+        2. Визначає, які правила застосовуються до цього файлу
+           (яких колонок характеристик є у файлі).
+        3. Для кожного рядка та кожного активного правила перевіряє
+           наявність конфліктів між текстовими полями та характеристикою.
+        4. Записує знайдені помилки у нову колонку "Помилки".
+        5. Зберігає result.xlsx із підсвіченими конфліктними клітинками
            (червоний — конфліктні поля, жовтий — опис помилки).
-        5. Виводить координати всіх конфліктних клітинок у консоль.
+        6. Виводить повний звіт: які характеристики перевірено,
+           скільки конфліктів знайдено по кожній.
 
     Аргументи:
         input_file:  Шлях до вхідного файлу (.csv, .xlsx, .xls).
@@ -557,6 +844,19 @@ def validate_feed(input_file: str, output_file: str) -> pd.DataFrame:
     # ключ = (df_row_index, column_name), значення = True (для унікальності)
     conflict_cells: dict[tuple[int, str], bool] = {}
 
+    # Лічильники для повного звіту: label → {"applicable": bool, "conflicts": int}
+    rule_stats: dict[str, dict] = {}
+    for rule in VALIDATION_RULES:
+        char_col = None
+        for hint in rule["char_hints"]:
+            char_col = find_column(df_columns, hint)
+            if char_col:
+                break
+        rule_stats[rule["label"]] = {
+            "applicable": char_col is not None,
+            "conflicts": 0,
+        }
+
     # Обробляємо кожен рядок товару.
     # Примітка: iterrows() зручний для складної рядкової логіки, але для дуже
     # великих фідів (>100k рядків) розгляньте можливість рефакторингу на df.apply().
@@ -576,6 +876,7 @@ def validate_feed(input_file: str, output_file: str) -> pd.DataFrame:
 
             if error_msg:
                 row_errors.append(error_msg)
+                rule_stats[rule["label"]]["conflicts"] += 1
                 for col in conflict_cols:
                     conflict_cells[(idx, col)] = True
 
@@ -583,9 +884,19 @@ def validate_feed(input_file: str, output_file: str) -> pd.DataFrame:
             df.at[idx, "Помилки"] = " | ".join(row_errors)
             conflict_cells[(idx, "Помилки")] = True
 
-    # Підраховуємо та виводимо результати
+    # Підраховуємо та виводимо загальні результати
     errors_count = (df["Помилки"] != "").sum()
-    print(f"Знайдено конфліктів: {errors_count} рядків.")
+    print(f"\nЗнайдено конфліктів: {errors_count} рядків із {len(df)}.")
+
+    # Виводимо повний звіт по характеристиках
+    print("\nЗвіт по характеристиках:")
+    for label, stats in rule_stats.items():
+        if not stats["applicable"]:
+            print(f"  —  {label}: колонка відсутня у файлі (пропущено)")
+        elif stats["conflicts"] == 0:
+            print(f"  ✓  {label}: конфліктів не знайдено")
+        else:
+            print(f"  ✗  {label}: знайдено {stats['conflicts']} конфліктів")
 
     if conflict_cells:
         print("\nКоординати конфліктних клітинок (рядок, колонка):")
