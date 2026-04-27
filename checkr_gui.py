@@ -12,14 +12,17 @@
 import sys
 import os
 import io
+import tempfile
+import re
 from pathlib import Path
 from contextlib import redirect_stdout
 
 try:
     from flask import Flask, render_template_string, request, jsonify, send_file
+    from werkzeug.utils import secure_filename
 except ImportError:
-    print("Помилка: не вдалося імпортувати Flask.", file=sys.stderr)
-    print("Встановіть його командою: pip install Flask", file=sys.stderr)
+    print("Помилка: не вдалося імпортувати Flask або werkzeug.", file=sys.stderr)
+    print("Встановіть їх командою: pip install Flask", file=sys.stderr)
     sys.exit(1)
 
 # Імпортуємо основну функцію валідації з checkr.py
@@ -32,7 +35,8 @@ except ImportError:
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
-app.config['UPLOAD_FOLDER'] = '/tmp/checkr_uploads'
+# Використовуємо системну тимчасову директорію для кросплатформеності
+app.config['UPLOAD_FOLDER'] = os.path.join(tempfile.gettempdir(), 'checkr_uploads')
 
 # Створюємо директорію для завантажень, якщо вона не існує
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -353,9 +357,23 @@ def validate():
     if file.filename == '':
         return jsonify({'success': False, 'error': 'Файл не обрано'})
     
+    # Перевіряємо розширення файлу
+    allowed_extensions = {'.csv', '.xlsx', '.xls'}
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in allowed_extensions:
+        return jsonify({
+            'success': False, 
+            'error': f'Непідтримуваний формат файлу. Підтримуються: {", ".join(allowed_extensions)}'
+        })
+    
     try:
+        # Очищаємо ім'я файлу для безпеки
+        safe_filename = secure_filename(file.filename)
+        if not safe_filename:
+            return jsonify({'success': False, 'error': 'Некоректне ім\'я файлу'})
+        
         # Зберігаємо завантажений файл
-        input_path = Path(app.config['UPLOAD_FOLDER']) / file.filename
+        input_path = Path(app.config['UPLOAD_FOLDER']) / safe_filename
         file.save(str(input_path))
         
         # Створюємо ім'я вихідного файлу
@@ -369,8 +387,8 @@ def validate():
         # Отримуємо вивід
         output = output_buffer.getvalue()
         
-        # Зберігаємо шлях до результату
-        download_id = f"{input_path.stem}_result"
+        # Створюємо безпечний ID для завантаження (лише букви, цифри, підкреслення)
+        download_id = re.sub(r'[^\w\-]', '_', input_path.stem) + "_result"
         results_storage[download_id] = str(output_file)
         
         return jsonify({
@@ -381,16 +399,35 @@ def validate():
         })
         
     except Exception as exc:
-        return jsonify({'success': False, 'error': str(exc)})
+        # Не викриваємо деталі помилки користувачу для безпеки
+        import logging
+        logging.error(f"Validation error: {exc}", exc_info=True)
+        return jsonify({'success': False, 'error': 'Виникла помилка під час обробки файлу'})
 
 
 @app.route('/download/<download_id>')
 def download(download_id):
     """Завантаження результату."""
+    # Валідуємо download_id - дозволяємо тільки букви, цифри, підкреслення та дефіси
+    if not re.match(r'^[\w\-]+$', download_id):
+        return "Некоректний ID файлу", 400
+    
     if download_id not in results_storage:
         return "Файл не знайдено", 404
     
     file_path = results_storage[download_id]
+    
+    # Переконуємось, що шлях знаходиться в межах upload folder
+    try:
+        resolved_path = Path(file_path).resolve()
+        upload_folder = Path(app.config['UPLOAD_FOLDER']).resolve()
+        if not resolved_path.is_relative_to(upload_folder):
+            return "Доступ заборонено", 403
+    except (ValueError, OSError):
+        return "Некоректний шлях", 400
+    
+    # Після успішного завантаження видаляємо файл зі словника
+    # (але залишаємо файл на диску для можливого повторного завантаження)
     return send_file(file_path, as_attachment=True)
 
 
@@ -401,10 +438,12 @@ def main():
     print("=" * 70)
     print("\n✅ Сервер запущено!")
     print("🌐 Відкрийте браузер за адресою: http://localhost:5000")
-    print("\n💡 Для зупинки сервера натисніть Ctrl+C\n")
+    print("\n💡 Для зупинки сервера натисніть Ctrl+C")
+    print("⚠️  УВАГА: Максимальний розмір файлу - 50MB\n")
     print("=" * 70 + "\n")
     
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    # Прив'язуємося до localhost (127.0.0.1) для безпеки
+    app.run(host='127.0.0.1', port=5000, debug=False)
 
 
 if __name__ == "__main__":
