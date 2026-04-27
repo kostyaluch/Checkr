@@ -608,11 +608,12 @@ def main() -> None:
     """Запуск програми з командного рядка.
 
     Використання:
-        python checkr.py <вхідний_файл> <вихідний_файл>
+        python checkr.py <вхідний_файл> [<вихідний_файл>]
 
     Приклади:
         python checkr.py products.csv result.xlsx
         python checkr.py products.xlsx result.xlsx
+        python checkr.py products.csv  # створить products_result.xlsx
     """
     parser = argparse.ArgumentParser(
         prog="checkr",
@@ -622,8 +623,18 @@ def main() -> None:
         ),
     )
     parser.add_argument("input", help="Вхідний файл (.csv, .xlsx або .xls)")
-    parser.add_argument("output", help="Вихідний файл (.xlsx)")
+    parser.add_argument(
+        "output",
+        nargs="?",
+        help="Вихідний файл (.xlsx). Якщо не вказано, створюється <input>_result.xlsx",
+    )
     args = parser.parse_args()
+
+    # Якщо output не вказано, створити автоматичне ім'я
+    if args.output is None:
+        input_path = Path(args.input)
+        output_name = f"{input_path.stem}_result.xlsx"
+        args.output = str(input_path.parent / output_name)
 
     try:
         validate_feed(args.input, args.output)

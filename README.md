@@ -23,14 +23,16 @@ pip install -r requirements.txt
 ## Використання
 
 ```bash
-python checkr.py <вхідний_файл> <вихідний_файл.xlsx>
+python checkr.py <вхідний_файл> [<вихідний_файл.xlsx>]
 ```
+
+Якщо вихідний файл не вказано, автоматично створюється файл `<вхідний_файл>_result.xlsx`.
 
 Приклади:
 ```bash
-python checkr.py products.csv result.xlsx
-python checkr.py products.xlsx result.xlsx
-python checkr.py sample_data.csv result.xlsx   # зразкові дані
+python checkr.py products.csv result.xlsx      # явне вказання вихідного файлу
+python checkr.py products.xlsx result.xlsx     # явне вказання вихідного файлу
+python checkr.py sample_data.csv               # створить sample_data_result.xlsx
 ```
 
 ## Структура вхідного файлу
