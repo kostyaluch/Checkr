@@ -14,6 +14,7 @@
 """
 
 import argparse
+import itertools
 import re
 import sys
 from pathlib import Path
@@ -427,7 +428,7 @@ _BATTERY_RE = re.compile(
 # Маппінг: нижній регістр одиниці → нормалізована форма.
 _BATTERY_UNIT_NORM: dict[str, str] = {
     "ма·год": "мАг", "ма·г": "мАг", "маг": "мАг", "mah": "мАг",
-    "а·год":  "Аг",  "а·г":  "Аг",  "аг":  "Аг",  "ah":  "Аг",
+    "а·год": "Аг",   "а·г": "Аг",   "аг": "Аг",   "ah": "Аг",
 }
 
 # Мультиплікатори для перетворення одиниць ємності до мАг (міліампер-годин).
@@ -1139,7 +1140,7 @@ _SEMANTIC_CONTRADICTIONS: list[dict] = [
 # Зберігаємо тут, щоб не перекомпілювати на кожному виклику check_semantic_conflicts.
 _SEMANTIC_TERM_PATTERNS: dict[str, re.Pattern] = {}
 for _contradiction in _SEMANTIC_CONTRADICTIONS:
-    for _term in _contradiction["group_a"] + _contradiction["group_b"]:
+    for _term in itertools.chain(_contradiction["group_a"], _contradiction["group_b"]):
         _key = _term.lower()
         if _key not in _SEMANTIC_TERM_PATTERNS:
             _SEMANTIC_TERM_PATTERNS[_key] = re.compile(
