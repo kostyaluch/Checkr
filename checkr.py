@@ -14,6 +14,7 @@
 """
 
 import argparse
+import itertools
 import re
 import sys
 from pathlib import Path
@@ -100,6 +101,14 @@ _UNIT_NORM: dict[str, str] = {
     "мб": "МБ", "mb": "МБ", "mib": "МБ",
 }
 
+# Мультиплікатори для перетворення одиниць пам'яті до МБ (мегабайт).
+# Використовується для порівняння значень у різних одиницях (наприклад, 1ТБ = 1024ГБ).
+_MEMORY_UNIT_TO_MB: dict[str, float] = {
+    "МБ": 1.0,
+    "ГБ": 1024.0,
+    "ТБ": 1024.0 * 1024.0,
+}
+
 
 def normalize_memory_value(raw: str) -> str:
     """Нормалізує одне значення пам'яті до стандартного формату «<число><одиниця>».
@@ -135,6 +144,31 @@ def normalize_memory_value(raw: str) -> str:
     # Нормалізуємо одиницю: шукаємо в маппінгу, або використовуємо верхній регістр
     unit = _UNIT_NORM.get(m.group(2).lower(), m.group(2).upper())
     return f"{number}{unit}"
+
+
+def memory_to_mb(normalized: str) -> float | None:
+    """Перетворює нормалізоване значення пам'яті (наприклад, «256ГБ») до МБ.
+
+    Підтримує одиниці: МБ, ГБ, ТБ (після нормалізації через normalize_memory_value).
+
+    Аргументи:
+        normalized: Нормалізований рядок виду «512ГБ», «1.5ТБ», «256МБ».
+
+    Повертає:
+        Числове значення в МБ або None, якщо рядок не вдалось розпарсити.
+
+    Приклад:
+        memory_to_mb("512ГБ")  →  524288.0
+        memory_to_mb("1ТБ")    →  1048576.0
+        memory_to_mb("256МБ")  →  256.0
+    """
+    for unit, multiplier in _MEMORY_UNIT_TO_MB.items():
+        if normalized.endswith(unit):
+            try:
+                return float(normalized[: -len(unit)]) * multiplier
+            except ValueError:
+                return None
+    return None
 
 
 def extract_memory_matches(text: str) -> list[tuple[str, str]]:
@@ -297,23 +331,24 @@ def extract_screen_diagonal_matches(text: str) -> list[tuple[str, str]]:
 # Вага пристрою
 # ---------------------------------------------------------------------------
 
-# Патерн для значень ваги в кілограмах:
-# Підтримує: 1.5 кг, 2,3 кг, 1.8kg, 2.1 KG
+# Патерн для значень ваги в кілограмах або грамах:
+# Підтримує: 1.5 кг, 2,3 кг, 1.8kg, 2.1 KG, 1500 г, 1200гр
+# Порядок важливий: «кг» перед «г», щоб «кг» не захоплювалось як «к» + «г».
 _WEIGHT_RE = re.compile(
     r"(?<!\d)"
-    r"(\d+(?:[.,]\d+)?)"   # числова частина
+    r"(\d+(?:[.,]\d+)?)"                  # числова частина
     r"\s*"
-    r"(кг|kg)"             # одиниця: кілограми (латиниця або кирилиця)
+    r"(кг|kg|гр\.?|г)"                    # одиниці: кг/kg перед г/гр
     r"(?!\w)",
     re.IGNORECASE | re.UNICODE,
 )
 
 
 def extract_weight_matches(text: str) -> list[tuple[str, str]]:
-    """Знаходить усі значення ваги у тексті (кілограми).
+    """Знаходить усі значення ваги у тексті (кілограми або грами).
 
-    Розпізнає форми: 1.5 кг, 2,3 кг, 1.8kg тощо.
-    Повертає список пар (оригінал, нормалізоване) у форматі «1.5кг».
+    Розпізнає форми: 1.5 кг, 2,3 кг, 1.8kg, 1500г, 1200гр тощо.
+    Повертає список пар (оригінал, нормалізоване) у форматі «1.5кг» або «1500г».
 
     Аргументи:
         text: Рядок, у якому шукаємо значення.
@@ -324,6 +359,8 @@ def extract_weight_matches(text: str) -> list[tuple[str, str]]:
     Приклад:
         extract_weight_matches("Легкий ноутбук вагою 1.5 кг")
         →  [('1.5 кг', '1.5кг')]
+        extract_weight_matches("Вага: 1500г")
+        →  [('1500г', '1500г')]
     """
     if not isinstance(text, str) or not text.strip():
         return []
@@ -333,8 +370,153 @@ def extract_weight_matches(text: str) -> list[tuple[str, str]]:
         number = m.group(1).replace(",", ".")
         if "." in number:
             number = number.rstrip("0").rstrip(".")
-        results.append((original, f"{number}кг"))
+        unit_raw = m.group(2).lower().rstrip(".")
+        # Нормалізуємо одиницю: кг/kg → кг, г/гр → г
+        if unit_raw in ("кг", "kg"):
+            unit_norm = "кг"
+        else:
+            unit_norm = "г"
+        results.append((original, f"{number}{unit_norm}"))
     return results
+
+
+def weight_to_grams(normalized: str) -> float | None:
+    """Перетворює нормалізоване значення ваги до грамів для порівняння.
+
+    Підтримує одиниці: кг, г (після нормалізації через extract_weight_matches).
+
+    Аргументи:
+        normalized: Нормалізований рядок виду «1.5кг», «1500г».
+
+    Повертає:
+        Числове значення у грамах або None, якщо рядок не вдалось розпарсити.
+
+    Приклад:
+        weight_to_grams("1.5кг")  →  1500.0
+        weight_to_grams("1500г")  →  1500.0
+        weight_to_grams("2кг")    →  2000.0
+    """
+    if normalized.endswith("кг"):
+        try:
+            return float(normalized[:-2]) * 1000
+        except ValueError:
+            return None
+    if normalized.endswith("г"):
+        try:
+            return float(normalized[:-1])
+        except ValueError:
+            return None
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Ємність акумулятора (mAh / Ah)
+# ---------------------------------------------------------------------------
+
+# Патерн для значень ємності акумулятора:
+# Підтримує: 5000 мАг, 5000 mAh, 5000мА·год, 5 Аг, 5Ah, 5А·год
+# Порядок важливий: більш специфічні одиниці («мА·год») — першими.
+_BATTERY_RE = re.compile(
+    r"(?<!\d)"
+    r"(\d+(?:[.,]\d+)?)"                                     # числова частина
+    r"\s*"
+    r"(мА·год|мА·г|мАг|mAh|А·год|А·г|Аг|Ah)"               # одиниці (порядок важливий)
+    r"(?!\w)",
+    re.IGNORECASE | re.UNICODE,
+)
+
+# Маппінг: нижній регістр одиниці → нормалізована форма.
+_BATTERY_UNIT_NORM: dict[str, str] = {
+    "ма·год": "мАг", "ма·г": "мАг", "маг": "мАг", "mah": "мАг",
+    "а·год": "Аг",   "а·г": "Аг",   "аг": "Аг",   "ah": "Аг",
+}
+
+# Мультиплікатори для перетворення одиниць ємності до мАг (міліампер-годин).
+_BATTERY_UNIT_TO_MAH: dict[str, float] = {
+    "мАг": 1.0,
+    "Аг":  1000.0,
+}
+
+
+def normalize_battery_value(raw: str) -> str:
+    """Нормалізує одне значення ємності акумулятора до стандартного формату.
+
+    Перетворює різні варіанти написання до єдиного стандарту:
+      - «mAh», «мА·год» → «мАг»
+      - «Ah», «А·год»   → «Аг»
+    Якщо рядок не відповідає шаблону — повертає оригінал у верхньому регістрі.
+
+    Аргументи:
+        raw: Рядок виду «5000 mAh», «5Ah», «5000мА·год» тощо.
+
+    Повертає:
+        Нормалізований рядок, наприклад: «5000мАг», «5Аг».
+
+    Приклад:
+        normalize_battery_value("5000 mAh")   →  "5000мАг"
+        normalize_battery_value("5Ah")         →  "5Аг"
+        normalize_battery_value("5000мА·год")  →  "5000мАг"
+    """
+    m = _BATTERY_RE.search(raw)
+    if not m:
+        return raw.strip().upper()
+    number = m.group(1).replace(",", ".")
+    if "." in number:
+        number = number.rstrip("0").rstrip(".")
+    unit = _BATTERY_UNIT_NORM.get(m.group(2).lower(), m.group(2))
+    return f"{number}{unit}"
+
+
+def extract_battery_matches(text: str) -> list[tuple[str, str]]:
+    """Знаходить усі значення ємності акумулятора у тексті.
+
+    Розпізнає форми: 5000 mAh, 5000мА·год, 5Ah тощо.
+    Повертає список пар (оригінал, нормалізоване) у форматі «5000мАг» або «5Аг».
+
+    Аргументи:
+        text: Рядок, у якому шукаємо значення.
+
+    Повертає:
+        Список пар (str, str). Порожній список, якщо нічого не знайдено.
+
+    Приклад:
+        extract_battery_matches("Акумулятор 5000 mAh")
+        →  [('5000 mAh', '5000мАг')]
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+    results = []
+    for m in _BATTERY_RE.finditer(text):
+        original = m.group(0).strip()
+        number = m.group(1).replace(",", ".")
+        if "." in number:
+            number = number.rstrip("0").rstrip(".")
+        unit_key = m.group(2)
+        unit = _BATTERY_UNIT_NORM.get(unit_key.lower(), unit_key)
+        results.append((original, f"{number}{unit}"))
+    return results
+
+
+def battery_to_mah(normalized: str) -> float | None:
+    """Перетворює нормалізоване значення ємності до мАг (міліампер-годин).
+
+    Аргументи:
+        normalized: Нормалізований рядок виду «5000мАг» або «5Аг».
+
+    Повертає:
+        Числове значення у мАг або None, якщо рядок не вдалось розпарсити.
+
+    Приклад:
+        battery_to_mah("5000мАг")  →  5000.0
+        battery_to_mah("5Аг")      →  5000.0
+    """
+    for unit, multiplier in _BATTERY_UNIT_TO_MAH.items():
+        if normalized.endswith(unit):
+            try:
+                return float(normalized[: -len(unit)]) * multiplier
+            except ValueError:
+                return None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -473,6 +655,88 @@ def extract_value_list_matches(
 # ===========================================================================
 
 
+# ---------------------------------------------------------------------------
+# Числове порівняння з урахуванням одиниць та виявлення опечаток
+# ---------------------------------------------------------------------------
+
+
+def _norm_to_base_value(normalized: str, checker_type: str) -> float | None:
+    """Перетворює нормалізоване значення до базової числової одиниці.
+
+    Використовується для порівняння значень у різних одиницях виміру.
+
+    Аргументи:
+        normalized:   Нормалізований рядок (напр. «512ГБ», «1.5кг», «5000мАг»).
+        checker_type: Тип перевірки (з VALIDATION_RULES).
+
+    Повертає:
+        float або None.
+    """
+    if checker_type == "memory":
+        return memory_to_mb(normalized)
+    if checker_type == "battery":
+        return battery_to_mah(normalized)
+    if checker_type == "weight":
+        return weight_to_grams(normalized)
+    if checker_type == "screen_diagonal":
+        m = re.match(r"^(\d+(?:\.\d+)?)", normalized)
+        return float(m.group(1)) if m else None
+    return None
+
+
+def _numeric_values_equal(norm1: str, norm2: str, checker_type: str) -> bool:
+    """Перевіряє числову еквівалентність двох значень з можливою конвертацією одиниць.
+
+    Наприклад: «1ТБ» == «1024ГБ», «5Аг» == «5000мАг», «1.5кг» == «1500г».
+
+    Аргументи:
+        norm1:        Перше нормалізоване значення.
+        norm2:        Друге нормалізоване значення.
+        checker_type: Тип перевірки — визначає алгоритм конвертації.
+
+    Повертає:
+        True, якщо значення чисельно еквівалентні.
+    """
+    if norm1 == norm2:
+        return True
+    val1 = _norm_to_base_value(norm1, checker_type)
+    val2 = _norm_to_base_value(norm2, checker_type)
+    if val1 is not None and val2 is not None and val1 > 0:
+        return abs(val1 - val2) / val1 < 1e-6
+    return False
+
+
+def _get_typo_hint(
+    canonical_norm: str, found_norms: list[str], checker_type: str
+) -> str | None:
+    """Повертає підказку, якщо значення відрізняються на типовий «зайвий нуль» (×10 або ×100).
+
+    Аргументи:
+        canonical_norm: Нормалізоване еталонне значення.
+        found_norms:    Список нормалізованих значень, знайдених у тексті.
+        checker_type:   Тип перевірки.
+
+    Повертає:
+        Рядок-підказку або None.
+
+    Приклад:
+        _get_typo_hint("512мАг", ["5120мАг"], "battery")
+        →  "можливо зайвий нуль (різниця ×10)"
+    """
+    canonical_val = _norm_to_base_value(canonical_norm, checker_type)
+    if canonical_val is None or canonical_val == 0:
+        return None
+    for norm in found_norms:
+        found_val = _norm_to_base_value(norm, checker_type)
+        if found_val is None or found_val == 0:
+            continue
+        ratio = max(found_val, canonical_val) / min(found_val, canonical_val)
+        for factor in (10, 100):
+            if abs(ratio - factor) / factor < 0.15:
+                return f"можливо зайвий нуль (різниця ×{factor})"
+    return None
+
+
 def _normalize_canonical(raw: str, rule: dict) -> str | None:
     """Витягує нормалізоване канонічне значення з колонки характеристики.
 
@@ -517,6 +781,19 @@ def _normalize_canonical(raw: str, rule: dict) -> str | None:
             if "." in number:
                 number = number.rstrip("0").rstrip(".")
             return f"{number}кг"
+        return None
+
+    if checker_type == "battery":
+        matches = extract_battery_matches(raw)
+        if matches:
+            return matches[0][1]
+        # Колонка характеристики може містити просте число (вважаємо мАг)
+        bare = re.match(r"^\s*(\d+(?:[.,]\d+)?)\s*$", raw)
+        if bare:
+            number = bare.group(1).replace(",", ".")
+            if "." in number:
+                number = number.rstrip("0").rstrip(".")
+            return f"{number}мАг"
         return None
 
     if checker_type == "resolution":
@@ -566,6 +843,8 @@ def _extract_for_rule(text: str, rule: dict) -> list[tuple[str, str]]:
         return extract_screen_diagonal_matches(text)
     if checker_type == "weight":
         return extract_weight_matches(text)
+    if checker_type == "battery":
+        return extract_battery_matches(text)
     if checker_type == "resolution":
         return extract_resolution_matches(text)
     if checker_type == "value_list":
@@ -639,6 +918,8 @@ def check_conflicts(
         # Характеристика заповнена, але не містить розпізнаного значення
         return "", []
 
+    checker_type = rule.get("checker_type", "memory")
+
     # Крок 3: Перевіряємо кожне текстове поле
     conflict_parts: list[str] = []   # Частини тексту повідомлення про конфлікт
     conflict_cols: list[str] = []    # Назви колонок, де виявлено конфлікт
@@ -664,8 +945,20 @@ def check_conflicts(
         # Крок 4: Конфлікт є, якщо канонічного значення серед знайдених немає
         found_norms = [norm for _, norm in matches]
         if canonical_norm not in found_norms:
+            # Перевіряємо числову еквівалентність з конвертацією одиниць
+            # (наприклад, 1ТБ == 1024ГБ, 5Аг == 5000мАг, 1.5кг == 1500г)
+            if any(
+                _numeric_values_equal(canonical_norm, n, checker_type)
+                for n in found_norms
+            ):
+                continue  # Значення чисельно еквівалентні — конфлікту немає
+
             found_raws = [raw for raw, _ in matches]
-            conflict_parts.append(f"{text_col} ({', '.join(found_raws)})")
+            typo_hint = _get_typo_hint(canonical_norm, found_norms, checker_type)
+            msg = f"{text_col} ({', '.join(found_raws)})"
+            if typo_hint:
+                msg += f" [{typo_hint}]"
+            conflict_parts.append(msg)
             conflict_cols.append(text_col)
 
     # Крок 5: Формуємо повідомлення про конфлікт
@@ -781,6 +1074,187 @@ def check_language_mismatch(
         error_msg = "Невідповідність мови: " + " | ".join(errors)
         return error_msg, conflict_cols
     
+    return "", []
+
+
+# ===========================================================================
+# Модуль 5c: Семантична перевірка
+# ===========================================================================
+
+# Пари семантично протилежних термінів.
+# Якщо терміни group_a знайдено в одній колонці, а group_b — в іншій,
+# це вважається суперечністю.
+_SEMANTIC_CONTRADICTIONS: list[dict] = [
+    {
+        "label": "Бездротовий/Дротовий",
+        "group_a": [
+            "бездротовий", "бездротова", "бездротове", "бездротові",
+            "беспроводной", "беспроводная", "беспроводное",
+            "wireless", "wi-fi", "wifi", "bluetooth",
+        ],
+        "group_b": [
+            "дротовий", "дротова", "дротове", "дротові",
+            "проводной", "проводная", "проводное",
+            "з дротом", "с проводом", "wired",
+        ],
+    },
+    {
+        "label": "Підсвітка клавіатури",
+        "group_a": [
+            "з підсвіткою клавіатури", "підсвітка клавіатури",
+            "backlit keyboard", "keyboard backlit",
+            "с подсветкой клавиатуры",
+        ],
+        "group_b": [
+            "без підсвітки клавіатури", "без підсвітки",
+            "без подсветки клавиатуры", "без подсветки",
+        ],
+    },
+    {
+        "label": "Сенсорний екран",
+        "group_a": [
+            "сенсорний екран", "сенсорний дисплей",
+            "touchscreen", "touch screen",
+            "сенсорный экран", "сенсорный дисплей",
+        ],
+        "group_b": [
+            "несенсорний", "не сенсорний",
+            "несенсорный", "без сенсорного",
+            "non-touch",
+        ],
+    },
+    {
+        "label": "Трансформер/Класичний",
+        "group_a": [
+            "трансформер", "2-в-1", "2 в 1", "two-in-one", "2-in-1",
+            "конвертований", "планшет-трансформер",
+        ],
+        "group_b": [
+            "не трансформер", "звичайний ноутбук", "класичний ноутбук",
+        ],
+    },
+]
+
+# Попередньо скомпільовані патерни для кожного терміна з _SEMANTIC_CONTRADICTIONS.
+# Ключ: термін (нижній регістр), значення: скомпільований re.Pattern.
+# Зберігаємо тут, щоб не перекомпілювати на кожному виклику check_semantic_conflicts.
+_SEMANTIC_TERM_PATTERNS: dict[str, re.Pattern] = {}
+for _contradiction in _SEMANTIC_CONTRADICTIONS:
+    for _term in itertools.chain(_contradiction["group_a"], _contradiction["group_b"]):
+        _key = _term.lower()
+        if _key not in _SEMANTIC_TERM_PATTERNS:
+            _SEMANTIC_TERM_PATTERNS[_key] = re.compile(
+                r"\b" + re.escape(_key) + r"\b", re.UNICODE
+            )
+
+# Регулярний вираз для кількості процесорних ядер.
+# Розпізнає: «12-ядерний», «4 ядерна», «8 cores», «6-core» тощо.
+_CORE_COUNT_RE = re.compile(
+    r"(\d+)\s*[-–—]?\s*"
+    r"(?:ядерн(?:ий|а|е|і|их|ій|ой|ая|ое)|ядер(?:ний)?|ядро|"
+    r"core(?:s)?)",
+    re.IGNORECASE | re.UNICODE,
+)
+
+# Колонки, у яких шукаємо семантичні суперечності
+_SEMANTIC_TEXT_HINTS = ["Название", "Назва", "Краткое описание", "Описание"]
+
+
+def check_semantic_conflicts(
+    row: pd.Series,
+    df_columns: list[str],
+) -> tuple[str, list[str]]:
+    """Перевіряє семантичні суперечності між текстовими полями товару.
+
+    Виявляє:
+      1. Протилежні за змістом терміни в різних колонках:
+         наприклад, «бездротовий» у назві, але «з дротом» в описі.
+      2. Суперечності у кількості ядер процесора:
+         наприклад, «12-ядерний» у назві, але «4-ядерний» в описі.
+
+    Аргументи:
+        row:        Рядок товару (pd.Series).
+        df_columns: Список усіх назв колонок DataFrame.
+
+    Повертає:
+        Кортеж (рядок_помилки, список_конфліктних_колонок).
+        Якщо суперечностей немає — ("", []).
+    """
+    # Збираємо вміст усіх текстових колонок
+    text_col_contents: dict[str, str] = {}
+    for hint in _SEMANTIC_TEXT_HINTS:
+        col = find_column(df_columns, hint)
+        if col and col not in text_col_contents:
+            raw = row.get(col, "")
+            if not pd.isna(raw) and str(raw).strip():
+                text_col_contents[col] = clean_html(str(raw)).lower()
+
+    if not text_col_contents:
+        return "", []
+
+    def _term_matches(term: str, text: str) -> bool:
+        """Перевіряє наявність терміна у тексті як цілого слова (з межами слова)."""
+        pattern = _SEMANTIC_TERM_PATTERNS.get(term)
+        if pattern is None:
+            # Запасний варіант: компіляція на льоту (для непередбачених термінів)
+            pattern = re.compile(r"\b" + re.escape(term) + r"\b", re.UNICODE)
+        return bool(pattern.search(text))
+
+    errors: list[str] = []
+    conflict_cols: list[str] = []
+
+    # Перевірка 1: Пари семантично протилежних термінів
+    for contradiction in _SEMANTIC_CONTRADICTIONS:
+        label = contradiction["label"]
+        group_a = [t.lower() for t in contradiction["group_a"]]
+        group_b = [t.lower() for t in contradiction["group_b"]]
+
+        cols_with_a: list[str] = []
+        cols_with_b: list[str] = []
+
+        for col, text in text_col_contents.items():
+            for term in group_a:
+                if _term_matches(term, text):
+                    cols_with_a.append(col)
+                    break
+            for term in group_b:
+                if _term_matches(term, text):
+                    cols_with_b.append(col)
+                    break
+
+        if cols_with_a and cols_with_b:
+            errors.append(
+                f"Семантичний конфлікт '{label}': "
+                f"протиріччя між {', '.join(cols_with_a)} та {', '.join(cols_with_b)}"
+            )
+            for col in set(cols_with_a + cols_with_b):
+                if col not in conflict_cols:
+                    conflict_cols.append(col)
+
+    # Перевірка 2: Кількість ядер процесора
+    core_counts: dict[str, set[str]] = {}
+    for col, text in text_col_contents.items():
+        found = set(_CORE_COUNT_RE.findall(text))
+        if found:
+            core_counts[col] = found
+
+    if len(core_counts) >= 2:
+        all_counts: set[str] = set()
+        for counts in core_counts.values():
+            all_counts.update(counts)
+        if len(all_counts) > 1:
+            details = "; ".join(
+                f"{col}: {', '.join(sorted(counts))}-ядерний"
+                for col, counts in core_counts.items()
+            )
+            errors.append(f"Конфлікт кількості ядер: {details}")
+            for col in core_counts:
+                if col not in conflict_cols:
+                    conflict_cols.append(col)
+
+    if errors:
+        return "Семантична перевірка: " + " | ".join(errors), conflict_cols
+
     return "", []
 
 
@@ -964,8 +1438,9 @@ def validate_feed(input_file: str, output_file: str) -> pd.DataFrame:
             "conflicts": 0,
         }
 
-    # Додаємо лічильник для перевірки мов
+    # Додаємо лічильники для перевірки мов та семантики
     language_conflicts = 0
+    semantic_conflicts = 0
 
     # Обробляємо кожен рядок товару.
     # Примітка: iterrows() зручний для складної рядкової логіки, але для дуже
@@ -984,6 +1459,19 @@ def validate_feed(input_file: str, output_file: str) -> pd.DataFrame:
         except Exception as exc:
             print(
                 f"Попередження: помилка при перевірці мови у рядку {idx}: {exc}"
+            )
+
+        # Семантична перевірка (суперечності між текстовими полями)
+        try:
+            sem_error_msg, sem_conflict_cols = check_semantic_conflicts(row, df_columns)
+            if sem_error_msg:
+                row_errors.append(sem_error_msg)
+                semantic_conflicts += 1
+                for col in sem_conflict_cols:
+                    conflict_cells[(idx, col)] = True
+        except Exception as exc:
+            print(
+                f"Попередження: помилка при семантичній перевірці у рядку {idx}: {exc}"
             )
 
         for rule in VALIDATION_RULES:
@@ -1017,6 +1505,13 @@ def validate_feed(input_file: str, output_file: str) -> pd.DataFrame:
         print(f"  ✓  Невідповідностей мов не знайдено")
     else:
         print(f"  ✗  Знайдено {language_conflicts} невідповідностей мов")
+
+    # Виводимо звіт по семантичній перевірці
+    print("\nСемантична перевірка:")
+    if semantic_conflicts == 0:
+        print(f"  ✓  Семантичних суперечностей не знайдено")
+    else:
+        print(f"  ✗  Знайдено {semantic_conflicts} семантичних суперечностей")
 
     # Виводимо повний звіт по характеристиках
     print("\nЗвіт по характеристиках:")
