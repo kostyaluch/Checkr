@@ -24,6 +24,7 @@ from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 
 from validation_rules import VALIDATION_RULES
+from language_detector import check_language_consistency
 
 # ---------------------------------------------------------------------------
 # Константи: кольори для підсвітки у вихідному Excel-файлі
@@ -397,9 +398,12 @@ def extract_resolution_matches(text: str) -> list[tuple[str, str]]:
     # Перевіряємо псевдоніми (від довших до коротших, щоб "Full HD" знаходилось
     # раніше "HD" і попередні збіги не перекривалися)
     for alias in sorted(_RESOLUTION_ALIASES, key=len, reverse=True):
-        idx = text_lower.find(alias)
-        if idx >= 0:
-            end = idx + len(alias)
+        # Використовуємо регулярний вираз з межами слова, щоб "HD" не знаходилось у "HDMI"
+        pattern = re.compile(r'\b' + re.escape(alias) + r'\b', re.IGNORECASE)
+        match = pattern.search(text_lower)
+        if match:
+            idx = match.start()
+            end = match.end()
             if not _overlaps(idx, end):
                 norm = _RESOLUTION_ALIASES[alias]
                 if norm not in seen_norms:
@@ -677,6 +681,109 @@ def check_conflicts(
     return "", []
 
 
+def check_language_mismatch(
+    row: pd.Series,
+    df_columns: list[str],
+) -> tuple[str, list[str]]:
+    """Перевіряє відповідність мов у парах російський/український текст.
+    
+    Перевіряє наступні пари колонок:
+    - "Название" (російська) та "Назва (ua)" (українська)
+    - Характеристики без "(ua)" (російські) та з "(ua)" (українські)
+    
+    Аргументи:
+        row:        Рядок товару (pd.Series).
+        df_columns: Список усіх назв колонок DataFrame.
+    
+    Повертає:
+        Кортеж (рядок_помилки, список_конфліктних_колонок).
+        Якщо мови відповідають — ("", []).
+    
+    Приклад:
+        При Название="Ноутбук із SSD", Назва (ua)="Ноутбук с SSD":
+        → ("Невідповідність мови: Название має бути російською, Назва (ua) має бути українською",
+           ["Название", "Назва (ua)"])
+    """
+    errors = []
+    conflict_cols = []
+    
+    # Перевірка 1: Назва товару (Название / Назва (ua))
+    ru_name_col = find_column(df_columns, "Название")
+    uk_name_col = find_column(df_columns, "Назва (ua)")
+    
+    if ru_name_col and uk_name_col:
+        ru_text = str(row.get(ru_name_col, "")).strip()
+        uk_text = str(row.get(uk_name_col, "")).strip()
+        
+        # Очищаємо від HTML
+        ru_text = clean_html(ru_text) if ru_text else ""
+        uk_text = clean_html(uk_text) if uk_text else ""
+        
+        if ru_text or uk_text:
+            is_valid, error_msg = check_language_consistency(ru_text, uk_text, allow_empty=True)
+            if not is_valid:
+                errors.append(f"Назва: {error_msg}")
+                if ru_text:
+                    conflict_cols.append(ru_name_col)
+                if uk_text:
+                    conflict_cols.append(uk_name_col)
+    
+    # Перевірка 2: Характеристики (знаходимо пари російська/українська)
+    # Групуємо колонки за базовою назвою (до ";")
+    char_pairs: dict[str, dict[str, str]] = {}  # базова назва → {"ru": col, "uk": col}
+    
+    for col in df_columns:
+        base_name = col.split(";")[0].strip()
+        
+        # Пропускаємо колонки назв та описів (вони не є характеристиками)
+        if base_name in ["Название", "Назва (ua)", "Краткое описание", "Артикул"]:
+            continue
+        if "Описание" in base_name or "Опис" in base_name:
+            continue
+        
+        # Визначаємо, чи це українська версія
+        if base_name.endswith(" (ua)"):
+            # Українська версія
+            ru_base = base_name[:-5].strip()  # Прибираємо " (ua)"
+            if ru_base not in char_pairs:
+                char_pairs[ru_base] = {}
+            char_pairs[ru_base]["uk"] = col
+        else:
+            # Російська версія (або нейтральна)
+            if base_name not in char_pairs:
+                char_pairs[base_name] = {}
+            char_pairs[base_name]["ru"] = col
+    
+    # Перевіряємо кожну пару
+    for base_name, pair in char_pairs.items():
+        if "ru" in pair and "uk" in pair:
+            ru_col = pair["ru"]
+            uk_col = pair["uk"]
+            
+            ru_text = str(row.get(ru_col, "")).strip()
+            uk_text = str(row.get(uk_col, "")).strip()
+            
+            # Очищаємо від HTML
+            ru_text = clean_html(ru_text) if ru_text else ""
+            uk_text = clean_html(uk_text) if uk_text else ""
+            
+            if ru_text or uk_text:
+                is_valid, error_msg = check_language_consistency(ru_text, uk_text, allow_empty=True)
+                if not is_valid:
+                    errors.append(f"Характеристика '{base_name}': {error_msg}")
+                    if ru_text:
+                        conflict_cols.append(ru_col)
+                    if uk_text:
+                        conflict_cols.append(uk_col)
+    
+    # Формуємо фінальне повідомлення
+    if errors:
+        error_msg = "Невідповідність мови: " + " | ".join(errors)
+        return error_msg, conflict_cols
+    
+    return "", []
+
+
 # ===========================================================================
 # Модуль 6: Читання вхідного файлу
 # ===========================================================================
@@ -857,11 +964,27 @@ def validate_feed(input_file: str, output_file: str) -> pd.DataFrame:
             "conflicts": 0,
         }
 
+    # Додаємо лічильник для перевірки мов
+    language_conflicts = 0
+
     # Обробляємо кожен рядок товару.
     # Примітка: iterrows() зручний для складної рядкової логіки, але для дуже
     # великих фідів (>100k рядків) розгляньте можливість рефакторингу на df.apply().
     for idx, row in df.iterrows():
         row_errors: list[str] = []
+
+        # Перевірка відповідності мов (російська/українська)
+        try:
+            lang_error_msg, lang_conflict_cols = check_language_mismatch(row, df_columns)
+            if lang_error_msg:
+                row_errors.append(lang_error_msg)
+                language_conflicts += 1
+                for col in lang_conflict_cols:
+                    conflict_cells[(idx, col)] = True
+        except Exception as exc:
+            print(
+                f"Попередження: помилка при перевірці мови у рядку {idx}: {exc}"
+            )
 
         for rule in VALIDATION_RULES:
             try:
@@ -887,6 +1010,13 @@ def validate_feed(input_file: str, output_file: str) -> pd.DataFrame:
     # Підраховуємо та виводимо загальні результати
     errors_count = (df["Помилки"] != "").sum()
     print(f"\nЗнайдено конфліктів: {errors_count} рядків із {len(df)}.")
+
+    # Виводимо звіт по перевірці мов
+    print("\nПеревірка відповідності мов:")
+    if language_conflicts == 0:
+        print(f"  ✓  Невідповідностей мов не знайдено")
+    else:
+        print(f"  ✗  Знайдено {language_conflicts} невідповідностей мов")
 
     # Виводимо повний звіт по характеристиках
     print("\nЗвіт по характеристиках:")
