@@ -31,7 +31,7 @@ class TestDetectLanguage:
     def test_russian_common_words(self):
         """Визначення за частими словами (без унікальних символів)."""
         assert detect_language("Тонкий ноутбук для работы") == "ru"  # "работы" - рос.
-        assert detect_language("Комплект поставкі") == "uk"  # "і" - укр. символ
+        assert detect_language("Комплект поставкі") == "uk"  # штучне "і" для тесту укр. символу
 
     def test_english_text(self):
         """Англійський текст не визначається."""
