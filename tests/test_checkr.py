@@ -13,8 +13,11 @@ import pytest
 
 from checkr import (
     VALIDATION_RULES,
+    battery_to_mah,
     check_conflicts,
+    check_semantic_conflicts,
     clean_html,
+    extract_battery_matches,
     extract_memory_matches,
     extract_memory_values,
     extract_resolution_matches,
@@ -22,9 +25,12 @@ from checkr import (
     extract_value_list_matches,
     extract_weight_matches,
     find_column,
+    memory_to_mb,
+    normalize_battery_value,
     normalize_memory_value,
     read_input_file,
     validate_feed,
+    weight_to_grams,
 )
 
 
@@ -1133,3 +1139,488 @@ class TestCommandLine:
             # Видаляємо створений файл після тесту
             if expected_output.exists():
                 expected_output.unlink()
+
+
+# ===========================================================================
+# Тести розширеної числової перевірки
+# ===========================================================================
+
+
+class TestMemoryToMb:
+    """Тести функції memory_to_mb: конвертація до МБ."""
+
+    def test_mb_returns_exact(self):
+        assert memory_to_mb("256МБ") == 256.0
+
+    def test_gb_multiplied_by_1024(self):
+        assert memory_to_mb("512ГБ") == 512.0 * 1024
+
+    def test_tb_multiplied_by_1024_squared(self):
+        assert memory_to_mb("1ТБ") == 1024.0 * 1024.0
+
+    def test_fractional_gb(self):
+        assert memory_to_mb("0.5ГБ") == 0.5 * 1024
+
+    def test_unknown_unit_returns_none(self):
+        assert memory_to_mb("512ХБ") is None
+
+    def test_tb_equals_1024_gb(self):
+        """1ТБ і 1024ГБ мають давати однаковий результат."""
+        assert memory_to_mb("1ТБ") == memory_to_mb("1024ГБ")
+
+    def test_025_tb_equals_256_gb(self):
+        """0.25ТБ == 256ГБ (бінарне переведення)."""
+        assert memory_to_mb("0.25ТБ") == memory_to_mb("256ГБ")
+
+
+class TestUnitAwareMemoryComparison:
+    """Тести: check_conflicts не видає конфлікт при еквівалентних значеннях у різних одиницях."""
+
+    def _ssd_rule(self) -> dict:
+        return {
+            "label": "SSD",
+            "checker_type": "memory",
+            "char_hints": ["Об'єм SSD"],
+            "text_hints": ["Название"],
+        }
+
+    def test_tb_in_name_gb_in_char_no_conflict(self):
+        """«1ТБ» у назві та «1024ГБ» у характеристиці — не конфлікт."""
+        row = pd.Series({
+            "Название": "Ноутбук 1 ТБ SSD",
+            "Об'єм SSD": "1024 ГБ",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._ssd_rule())
+        assert error == ""
+
+    def test_025_tb_in_name_256_gb_in_char_no_conflict(self):
+        """«0.25ТБ» у назві та «256ГБ» у характеристиці — не конфлікт."""
+        row = pd.Series({
+            "Название": "Ноутбук 0.25 ТБ SSD",
+            "Об'єм SSD": "256 ГБ",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._ssd_rule())
+        assert error == ""
+
+    def test_different_values_still_conflict(self):
+        """Різні значення (512ГБ vs 256ГБ) — конфлікт."""
+        row = pd.Series({
+            "Название": "Ноутбук 512 ГБ SSD",
+            "Об'єм SSD": "256 ГБ",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._ssd_rule())
+        assert error != ""
+        assert "Конфлікт SSD" in error
+
+
+class TestTypoDetection:
+    """Тести виявлення типових опечаток (зайвий нуль)."""
+
+    def _battery_rule(self) -> dict:
+        return {
+            "label": "Ємність акумулятора",
+            "checker_type": "battery",
+            "char_hints": ["Акумулятор"],
+            "text_hints": ["Название"],
+        }
+
+    def test_extra_zero_typo_hint_in_error(self):
+        """5120 мАг у назві vs 512 мАг у характеристиці — підказка про опечатку."""
+        row = pd.Series({
+            "Название": "Планшет 5120 mAh",
+            "Акумулятор": "512 mAh",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._battery_rule())
+        assert error != ""
+        assert "можливо зайвий нуль" in error
+
+    def test_no_typo_hint_for_normal_conflict(self):
+        """5000 мАг vs 6000 мАг — звичайний конфлікт без підказки про опечатку."""
+        row = pd.Series({
+            "Название": "Планшет 5000 mAh",
+            "Акумулятор": "6000 mAh",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._battery_rule())
+        assert error != ""
+        assert "можливо зайвий нуль" not in error
+
+
+# ===========================================================================
+# Тести ємності акумулятора (battery)
+# ===========================================================================
+
+
+class TestNormalizeBatteryValue:
+    """Тести нормалізації значень ємності акумулятора."""
+
+    def test_mah_latin(self):
+        assert normalize_battery_value("5000 mAh") == "5000мАг"
+
+    def test_mah_cyrillic(self):
+        assert normalize_battery_value("5000мАг") == "5000мАг"
+
+    def test_mah_dot_notation(self):
+        assert normalize_battery_value("5000мА·год") == "5000мАг"
+
+    def test_ah_latin(self):
+        assert normalize_battery_value("5Ah") == "5Аг"
+
+    def test_ah_cyrillic(self):
+        assert normalize_battery_value("5Аг") == "5Аг"
+
+    def test_ah_dot_notation(self):
+        assert normalize_battery_value("5А·год") == "5Аг"
+
+    def test_fractional_ah(self):
+        assert normalize_battery_value("5.5 Ah") == "5.5Аг"
+
+    def test_unknown_returns_uppercase(self):
+        assert normalize_battery_value("unknown") == "UNKNOWN"
+
+    def test_trailing_zeros_stripped(self):
+        assert normalize_battery_value("5000.0 mAh") == "5000мАг"
+
+
+class TestExtractBatteryMatches:
+    """Тести пошуку значень ємності акумулятора у тексті."""
+
+    def test_finds_mah_value(self):
+        result = extract_battery_matches("Планшет із акумулятором 5000 mAh")
+        assert len(result) == 1
+        assert result[0][1] == "5000мАг"
+
+    def test_finds_ah_value(self):
+        result = extract_battery_matches("Акумулятор 5 Ah")
+        assert len(result) == 1
+        assert result[0][1] == "5Аг"
+
+    def test_finds_cyrillic_mah(self):
+        result = extract_battery_matches("Зарядка 5000 мАг")
+        assert len(result) == 1
+        assert result[0][1] == "5000мАг"
+
+    def test_empty_string_returns_empty(self):
+        assert extract_battery_matches("") == []
+
+    def test_none_returns_empty(self):
+        assert extract_battery_matches(None) == []
+
+    def test_no_battery_value_returns_empty(self):
+        assert extract_battery_matches("Ноутбук 512 ГБ SSD") == []
+
+    def test_multiple_values(self):
+        result = extract_battery_matches("5000 mAh або 5 Ah")
+        norms = [n for _, n in result]
+        assert "5000мАг" in norms
+        assert "5Аг" in norms
+
+
+class TestBatteryToMah:
+    """Тести конвертації значень акумулятора до мАг."""
+
+    def test_mah_unit_returns_same(self):
+        assert battery_to_mah("5000мАг") == 5000.0
+
+    def test_ah_unit_multiplied_by_1000(self):
+        assert battery_to_mah("5Аг") == 5000.0
+
+    def test_5ah_equals_5000mah(self):
+        assert battery_to_mah("5Аг") == battery_to_mah("5000мАг")
+
+    def test_unknown_unit_returns_none(self):
+        assert battery_to_mah("5000Вт") is None
+
+    def test_fractional_ah(self):
+        assert battery_to_mah("5.5Аг") == 5500.0
+
+
+class TestBatteryUnitAwareComparison:
+    """Тести: check_conflicts не видає конфлікт при еквівалентних значеннях mAh/Ah."""
+
+    def _battery_rule(self) -> dict:
+        return {
+            "label": "Ємність акумулятора",
+            "checker_type": "battery",
+            "char_hints": ["Акумулятор"],
+            "text_hints": ["Название"],
+        }
+
+    def test_5ah_in_name_5000mah_in_char_no_conflict(self):
+        """«5 Ah» у назві та «5000 mAh» у характеристиці — не конфлікт."""
+        row = pd.Series({
+            "Название": "Телефон 5 Ah акумулятор",
+            "Акумулятор": "5000 mAh",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._battery_rule())
+        assert error == ""
+
+    def test_5000mah_in_name_5ah_in_char_no_conflict(self):
+        """«5000 mAh» у назві та «5 Ah» у характеристиці — не конфлікт."""
+        row = pd.Series({
+            "Название": "Телефон 5000 mAh акумулятор",
+            "Акумулятор": "5 Ah",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._battery_rule())
+        assert error == ""
+
+    def test_different_battery_values_conflict(self):
+        """5000 mAh vs 6000 mAh — конфлікт."""
+        row = pd.Series({
+            "Название": "Телефон 5000 mAh акумулятор",
+            "Акумулятор": "6000 mAh",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._battery_rule())
+        assert error != ""
+        assert "Конфлікт Ємність акумулятора" in error
+
+    def test_battery_rule_in_validate_feed(self, tmp_path):
+        """Інтеграційний тест: виявлення конфлікту ємності акумулятора."""
+        df = pd.DataFrame([{
+            "Название": "Телефон 3000 mAh акумулятор",
+            "Ємність акумулятора": "5000 mAh",
+        }])
+        csv_path = str(tmp_path / "input.csv")
+        df.to_csv(csv_path, index=False, encoding="utf-8")
+        out = str(tmp_path / "result.xlsx")
+        result_df = validate_feed(csv_path, out)
+        assert "Конфлікт Ємність акумулятора" in result_df["Помилки"].iloc[0]
+
+
+# ===========================================================================
+# Тести розширеної перевірки ваги (кг/г)
+# ===========================================================================
+
+
+class TestWeightToGrams:
+    """Тести конвертації ваги до грамів."""
+
+    def test_kg_multiplied_by_1000(self):
+        assert weight_to_grams("1.5кг") == 1500.0
+
+    def test_grams_returns_same(self):
+        assert weight_to_grams("1500г") == 1500.0
+
+    def test_1500g_equals_1_5kg(self):
+        assert weight_to_grams("1500г") == weight_to_grams("1.5кг")
+
+    def test_unknown_unit_returns_none(self):
+        assert weight_to_grams("1.5фунт") is None
+
+    def test_2kg_returns_2000g(self):
+        assert weight_to_grams("2кг") == 2000.0
+
+
+class TestExtractWeightMatchesWithGrams:
+    """Тести пошуку значень ваги з підтримкою грамів."""
+
+    def test_finds_grams(self):
+        result = extract_weight_matches("Вага 1500г")
+        assert len(result) == 1
+        assert result[0][1] == "1500г"
+
+    def test_finds_gr(self):
+        result = extract_weight_matches("Вага 1500гр")
+        assert len(result) == 1
+        assert result[0][1] == "1500г"
+
+    def test_finds_kg_still_works(self):
+        result = extract_weight_matches("Вага 1.5 кг")
+        assert len(result) == 1
+        assert result[0][1] == "1.5кг"
+
+    def test_does_not_match_gb(self):
+        """«ГБ» не повинно розпізнаватися як грами."""
+        result = extract_weight_matches("512 ГБ SSD")
+        assert result == []
+
+    def test_does_not_match_gb_latin(self):
+        """«GB» не повинно розпізнаватися як грами."""
+        result = extract_weight_matches("256 GB RAM")
+        assert result == []
+
+
+class TestWeightUnitAwareComparison:
+    """Тести: check_conflicts не видає конфлікт при еквівалентних кг/г."""
+
+    def _weight_rule(self) -> dict:
+        return {
+            "label": "Вага",
+            "checker_type": "weight",
+            "char_hints": ["Вага"],
+            "text_hints": ["Название"],
+        }
+
+    def test_1500g_in_name_1_5kg_in_char_no_conflict(self):
+        """«1500г» у назві та «1.5кг» у характеристиці — не конфлікт."""
+        row = pd.Series({
+            "Название": "Ноутбук 1500г",
+            "Вага": "1.5кг",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._weight_rule())
+        assert error == ""
+
+    def test_1_5kg_in_name_1500g_in_char_no_conflict(self):
+        """«1.5кг» у назві та «1500г» у характеристиці — не конфлікт."""
+        row = pd.Series({
+            "Название": "Ноутбук 1.5 кг",
+            "Вага": "1500г",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._weight_rule())
+        assert error == ""
+
+    def test_different_weight_values_conflict(self):
+        """1.5кг vs 2.0кг — конфлікт."""
+        row = pd.Series({
+            "Название": "Ноутбук 1.5 кг",
+            "Вага": "2.0кг",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._weight_rule())
+        assert error != ""
+        assert "Конфлікт Вага" in error
+
+
+# ===========================================================================
+# Тести семантичної перевірки
+# ===========================================================================
+
+
+class TestCheckSemanticConflicts:
+    """Тести функції check_semantic_conflicts."""
+
+    def test_wireless_wired_contradiction_detected(self):
+        """«бездротовий» у назві та «з дротом» в описі — конфлікт."""
+        row = pd.Series({
+            "Название": "Бездротовий ноутбук",
+            "Краткое описание": "Пристрій з дротом",
+        })
+        error, cols = check_semantic_conflicts(row, list(row.index))
+        assert error != ""
+        assert "Бездротовий/Дротовий" in error
+        assert "Название" in cols
+        assert "Краткое описание" in cols
+
+    def test_wireless_wired_ru_detected(self):
+        """«беспроводной» у назві та «проводной» в описі — конфлікт."""
+        row = pd.Series({
+            "Название": "Беспроводной адаптер",
+            "Краткое описание": "Проводной интерфейс",
+        })
+        error, cols = check_semantic_conflicts(row, list(row.index))
+        assert error != ""
+        assert "Бездротовий/Дротовий" in error
+
+    def test_no_contradiction_for_wireless_only(self):
+        """Лише «бездротовий» без протилежного — не конфлікт."""
+        row = pd.Series({
+            "Название": "Бездротовий ноутбук",
+            "Краткое описание": "Підключення через wi-fi",
+        })
+        error, cols = check_semantic_conflicts(row, list(row.index))
+        assert "Бездротовий/Дротовий" not in error
+
+    def test_no_contradiction_for_wired_only(self):
+        """Лише «з дротом» без протилежного — не конфлікт."""
+        row = pd.Series({
+            "Название": "Ноутбук з дротом",
+            "Краткое описание": "Провідне з'єднання",
+        })
+        error, cols = check_semantic_conflicts(row, list(row.index))
+        assert "Бездротовий/Дротовий" not in error
+
+    def test_core_count_conflict_detected(self):
+        """«12-ядерний» у назві та «4-ядерний» в описі — конфлікт."""
+        row = pd.Series({
+            "Название": "Ноутбук 12-ядерний процесор",
+            "Краткое описание": "Потужний 4-ядерний CPU",
+        })
+        error, cols = check_semantic_conflicts(row, list(row.index))
+        assert error != ""
+        assert "Конфлікт кількості ядер" in error
+
+    def test_core_count_same_no_conflict(self):
+        """Однакова кількість ядер у всіх полях — не конфлікт."""
+        row = pd.Series({
+            "Название": "Ноутбук 8-ядерний процесор",
+            "Краткое описание": "Потужний 8-ядерний CPU",
+        })
+        error, cols = check_semantic_conflicts(row, list(row.index))
+        assert "Конфлікт кількості ядер" not in error
+
+    def test_core_count_single_field_no_conflict(self):
+        """Кількість ядер лише в одному полі — не конфлікт."""
+        row = pd.Series({
+            "Название": "Ноутбук 8-ядерний процесор",
+            "Краткое описание": "Потужний ноутбук для роботи",
+        })
+        error, cols = check_semantic_conflicts(row, list(row.index))
+        assert "Конфлікт кількості ядер" not in error
+
+    def test_empty_row_no_conflict(self):
+        """Порожній рядок — немає конфліктів."""
+        row = pd.Series({"Название": "", "Краткое описание": ""})
+        error, cols = check_semantic_conflicts(row, list(row.index))
+        assert error == ""
+
+    def test_semantic_error_in_errors_column(self, tmp_path):
+        """Інтеграційний тест: семантичний конфлікт записується в колонку Помилки."""
+        df = pd.DataFrame([{
+            "Название": "Бездротовий ноутбук",
+            "Краткое описание": "Пристрій з дротом",
+        }])
+        csv_path = str(tmp_path / "input.csv")
+        df.to_csv(csv_path, index=False, encoding="utf-8")
+        out = str(tmp_path / "result.xlsx")
+        result_df = validate_feed(csv_path, out)
+        assert "Семантична перевірка" in result_df["Помилки"].iloc[0]
+        assert "Бездротовий/Дротовий" in result_df["Помилки"].iloc[0]
+
+    def test_semantic_conflict_highlighted_in_excel(self, tmp_path):
+        """Інтеграційний тест: конфліктні колонки підсвічені в Excel."""
+        from openpyxl import load_workbook
+        df = pd.DataFrame([{
+            "Название": "Бездротовий ноутбук",
+            "Краткое описание": "Пристрій з дротом",
+        }])
+        csv_path = str(tmp_path / "input.csv")
+        df.to_csv(csv_path, index=False, encoding="utf-8")
+        out = str(tmp_path / "result.xlsx")
+        validate_feed(csv_path, out)
+        wb = load_workbook(out)
+        ws = wb.active
+        # Переконуємося, що клітинка Помилки підсвічена (жовтий)
+        header = {cell.value: cell.column for cell in ws[1]}
+        pomylky_col = header.get("Помилки")
+        assert pomylky_col is not None
+        cell = ws.cell(row=2, column=pomylky_col)
+        assert cell.fill.fgColor.rgb != "00000000"
+
+    def test_cores_english_detected(self):
+        """«12 cores» у назві та «4 cores» в описі — конфлікт."""
+        row = pd.Series({
+            "Название": "Laptop with 12 cores CPU",
+            "Краткое описание": "4 cores processor",
+        })
+        error, cols = check_semantic_conflicts(row, list(row.index))
+        assert "Конфлікт кількості ядер" in error
+
+
+class TestValidationRulesBattery:
+    """Тести правил валідації: ємність акумулятора."""
+
+    def test_has_battery_rule(self):
+        labels = [r["label"] for r in VALIDATION_RULES]
+        assert "Ємність акумулятора" in labels
+
+    def test_battery_rule_has_correct_checker_type(self):
+        battery_rule = next(
+            r for r in VALIDATION_RULES if r["label"] == "Ємність акумулятора"
+        )
+        assert battery_rule["checker_type"] == "battery"
+
+    def test_battery_rule_has_mah_hint(self):
+        battery_rule = next(
+            r for r in VALIDATION_RULES if r["label"] == "Ємність акумулятора"
+        )
+        assert any("mAh" in hint or "акумулятор" in hint.lower()
+                   for hint in battery_rule["char_hints"])
+
