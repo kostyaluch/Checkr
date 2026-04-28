@@ -426,8 +426,8 @@ _BATTERY_RE = re.compile(
 
 # Маппінг: нижній регістр одиниці → нормалізована форма.
 _BATTERY_UNIT_NORM: dict[str, str] = {
-    "мА·год": "мАг", "мА·г": "мАг", "мАг": "мАг", "mah": "мАг",
-    "А·год": "Аг",   "А·г": "Аг",   "Аг": "Аг",   "ah": "Аг",
+    "ма·год": "мАг", "ма·г": "мАг", "маг": "мАг", "mah": "мАг",
+    "а·год":  "Аг",  "а·г":  "Аг",  "аг":  "Аг",  "ah":  "Аг",
 }
 
 # Мультиплікатори для перетворення одиниць ємності до мАг (міліампер-годин).
@@ -462,7 +462,7 @@ def normalize_battery_value(raw: str) -> str:
     number = m.group(1).replace(",", ".")
     if "." in number:
         number = number.rstrip("0").rstrip(".")
-    unit = _BATTERY_UNIT_NORM.get(m.group(2), _BATTERY_UNIT_NORM.get(m.group(2).lower(), m.group(2)))
+    unit = _BATTERY_UNIT_NORM.get(m.group(2).lower(), m.group(2))
     return f"{number}{unit}"
 
 
@@ -491,7 +491,7 @@ def extract_battery_matches(text: str) -> list[tuple[str, str]]:
         if "." in number:
             number = number.rstrip("0").rstrip(".")
         unit_key = m.group(2)
-        unit = _BATTERY_UNIT_NORM.get(unit_key, _BATTERY_UNIT_NORM.get(unit_key.lower(), unit_key))
+        unit = _BATTERY_UNIT_NORM.get(unit_key.lower(), unit_key)
         results.append((original, f"{number}{unit}"))
     return results
 
@@ -1134,6 +1134,18 @@ _SEMANTIC_CONTRADICTIONS: list[dict] = [
     },
 ]
 
+# Попередньо скомпільовані патерни для кожного терміна з _SEMANTIC_CONTRADICTIONS.
+# Ключ: термін (нижній регістр), значення: скомпільований re.Pattern.
+# Зберігаємо тут, щоб не перекомпілювати на кожному виклику check_semantic_conflicts.
+_SEMANTIC_TERM_PATTERNS: dict[str, re.Pattern] = {}
+for _contradiction in _SEMANTIC_CONTRADICTIONS:
+    for _term in _contradiction["group_a"] + _contradiction["group_b"]:
+        _key = _term.lower()
+        if _key not in _SEMANTIC_TERM_PATTERNS:
+            _SEMANTIC_TERM_PATTERNS[_key] = re.compile(
+                r"\b" + re.escape(_key) + r"\b", re.UNICODE
+            )
+
 # Регулярний вираз для кількості процесорних ядер.
 # Розпізнає: «12-ядерний», «4 ядерна», «8 cores», «6-core» тощо.
 _CORE_COUNT_RE = re.compile(
@@ -1181,7 +1193,10 @@ def check_semantic_conflicts(
 
     def _term_matches(term: str, text: str) -> bool:
         """Перевіряє наявність терміна у тексті як цілого слова (з межами слова)."""
-        pattern = re.compile(r"\b" + re.escape(term) + r"\b", re.UNICODE)
+        pattern = _SEMANTIC_TERM_PATTERNS.get(term)
+        if pattern is None:
+            # Запасний варіант: компіляція на льоту (для непередбачених термінів)
+            pattern = re.compile(r"\b" + re.escape(term) + r"\b", re.UNICODE)
         return bool(pattern.search(text))
 
     errors: list[str] = []
