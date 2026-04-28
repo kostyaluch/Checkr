@@ -397,9 +397,12 @@ def extract_resolution_matches(text: str) -> list[tuple[str, str]]:
     # Перевіряємо псевдоніми (від довших до коротших, щоб "Full HD" знаходилось
     # раніше "HD" і попередні збіги не перекривалися)
     for alias in sorted(_RESOLUTION_ALIASES, key=len, reverse=True):
-        idx = text_lower.find(alias)
-        if idx >= 0:
-            end = idx + len(alias)
+        # Використовуємо регулярний вираз з межами слова, щоб "HD" не знаходилось у "HDMI"
+        pattern = re.compile(r'\b' + re.escape(alias) + r'\b', re.IGNORECASE)
+        match = pattern.search(text_lower)
+        if match:
+            idx = match.start()
+            end = match.end()
             if not _overlaps(idx, end):
                 norm = _RESOLUTION_ALIASES[alias]
                 if norm not in seen_norms:

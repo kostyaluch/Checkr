@@ -378,6 +378,20 @@ class TestExtractResolutionMatches:
     def test_no_resolution_in_text(self):
         assert extract_resolution_matches("Просто текст") == []
 
+    def test_hdmi_not_matched_as_hd(self):
+        """HDMI не має розпізнаватись як HD (word boundary check)."""
+        matches = extract_resolution_matches("Підтримка HDMI та DisplayPort")
+        # Не повинно бути жодних збігів з роздільною здатністю
+        assert matches == []
+    
+    def test_hd_in_sentence_with_hdmi(self):
+        """HD має знаходитись окремо, але не в HDMI."""
+        matches = extract_resolution_matches("Екран HD з підтримкою HDMI")
+        norms = [n for _, n in matches]
+        # Має бути один збіг для "HD", але не для "HDMI"
+        assert "1366x768" in norms
+        assert len(matches) == 1
+
 
 # ===========================================================================
 # Тести Модуля 2b: extract_value_list_matches
