@@ -15,6 +15,7 @@
 
 import argparse
 import itertools
+import math
 import re
 import sys
 from pathlib import Path
@@ -26,6 +27,19 @@ from openpyxl.styles import PatternFill
 
 from validation_rules import VALIDATION_RULES
 from language_detector import check_language_consistency
+
+# ---------------------------------------------------------------------------
+# Константи: параметри контекстно-залежного пошуку пам'яті
+# ---------------------------------------------------------------------------
+
+# Бонус відстані для ключових слів, що йдуть ПІСЛЯ значення пам'яті.
+# Наприклад, "16 GB RAM" — слово "RAM" йде після значення.
+# Цей бонус дає пріоритет таким випадкам перед "SSD ... 16 GB".
+KEYWORD_AFTER_VALUE_BONUS = 5
+
+# Максимальна відстань (у символах) між значенням пам'яті та ключовим словом.
+# Якщо ключове слово далі — воно не враховується.
+MAX_CONTEXT_DISTANCE = 50
 
 # ---------------------------------------------------------------------------
 # Константи: кольори для підсвітки у вихідному Excel-файлі
@@ -210,6 +224,140 @@ def extract_memory_values(text: str) -> list[str]:
         extract_memory_values("Просто текст")                      →  []
     """
     return [norm for _, norm in extract_memory_matches(text)]
+
+
+def extract_memory_matches_with_context(
+    text: str, context_keywords: list[str] | None = None
+) -> list[tuple[str, str]]:
+    """Знаходить значення об'єму пам'яті у тексті з урахуванням контексту.
+
+    Якщо вказані ключові слова (context_keywords), повертає лише ті значення пам'яті,
+    які знаходяться поруч із цими словами. Це дозволяє розрізняти RAM, SSD, VRAM тощо.
+
+    Алгоритм:
+      1. Знаходить усі значення пам'яті у тексті.
+      2. Для кожного значення перевіряє, чи є хоча б одне ключове слово в радіусі
+         MAX_CONTEXT_DISTANCE символів (після коригування відстані).
+      3. Додатково, якщо є конкуруючі ключові слова (SSD, RAM тощо) ближче ніж цільове,
+         значення не додається (щоб уникнути плутанини).
+      4. Якщо context_keywords не вказано або порожній — повертає всі знайдені значення.
+
+    Аргументи:
+        text:             Рядок, у якому шукаємо значення.
+        context_keywords: Список ключових слів для фільтрації (наприклад, ["SSD", "накопичувач"]).
+                          Пошук нечутливий до регістру.
+
+    Повертає:
+        Список пар (оригінал, нормалізоване). Порожній список, якщо нічого не знайдено.
+
+    Приклад:
+        extract_memory_matches_with_context(
+            "Ноутбук із 512 ГБ SSD та 16 GB RAM",
+            ["SSD", "накопичувач"]
+        )
+        →  [("512 ГБ", "512ГБ")]  # Лише SSD, RAM ігнорується
+
+        extract_memory_matches_with_context(
+            "Ноутбук із 512 ГБ SSD та 16 GB RAM",
+            ["RAM", "оперативна", "оперативной"]
+        )
+        →  [("16 GB", "16ГБ")]  # Лише RAM, SSD ігнорується
+
+        extract_memory_matches_with_context("Ноутбук 512 ГБ SSD", None)
+        →  [("512 ГБ", "512ГБ")]  # Без фільтрації
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+
+    # Якщо контекст не вказано — повертаємо всі значення
+    if not context_keywords:
+        return extract_memory_matches(text)
+
+    # Нормалізуємо ключові слова до нижнього регістру
+    keywords_lower = [kw.lower() for kw in context_keywords]
+
+    # Список конкуруючих ключових слів (інші СПЕЦИФІЧНІ типи пам'яті, які НЕ є цільовими)
+    # Використовується для виключення значень, якщо інший тип пам'яті ближче
+    # НЕ включаємо загальні слова на кшталт "memory", "памят", тільки специфічні типи
+    competing_keywords = [
+        "ssd", "ссд", "накопичувач", "накопитель", "твердотіл", "твердотел",
+        "ram", "озу", "оперативн",
+        "vram", "відеопам", "видеопам",
+        "hdd", "жорстк", "жестк",
+    ]
+    
+    # Видаляємо з конкурентів ті, що є в цільових keywords
+    competitors = [kw for kw in competing_keywords if kw not in keywords_lower]
+    
+    text_lower = text.lower()
+    results: list[tuple[str, str]] = []
+
+    # Знаходимо всі збіги пам'яті
+    for match in _MEMORY_RE.finditer(text):
+        num, unit = match.groups()
+        value_start = match.start()
+        value_end = match.end()
+
+        # Знаходимо найближче цільове ключове слово
+        # Пріоритет: спочатку шукаємо ПІСЛЯ значення (в межах 15 символів),
+        # потім ДО значення
+        min_target_distance = math.inf
+        for keyword in keywords_lower:
+            idx = 0
+            while True:
+                idx = text_lower.find(keyword, idx)
+                if idx == -1:
+                    break
+                
+                # Відстань залежить від того, де знаходиться ключове слово
+                if idx >= value_end:
+                    # Ключове слово ПІСЛЯ значення - це найбільш природно
+                    distance = idx - value_end
+                    # Застосовуємо бонус для слів після значення
+                    # щоб "4 GB RAM" виграло проти "SSD ... 4 GB"
+                    distance = max(0, distance - KEYWORD_AFTER_VALUE_BONUS)
+                else:
+                    # Ключове слово ДО значення
+                    distance = value_start - (idx + len(keyword))
+                
+                if distance >= 0 and distance < min_target_distance:
+                    min_target_distance = distance
+                idx += 1
+
+        # Якщо цільове ключове слово далі MAX_CONTEXT_DISTANCE — пропускаємо
+        if min_target_distance > MAX_CONTEXT_DISTANCE:
+            continue
+
+        # Перевіряємо, чи немає конкуруючого ключового слова ближче
+        min_competitor_distance = math.inf
+        for keyword in competitors:
+            idx = 0
+            while True:
+                idx = text_lower.find(keyword, idx)
+                if idx == -1:
+                    break
+                
+                # Така ж логіка для конкурентів
+                if idx >= value_end:
+                    distance = idx - value_end
+                    distance = max(0, distance - KEYWORD_AFTER_VALUE_BONUS)
+                else:
+                    distance = value_start - (idx + len(keyword))
+                
+                if distance >= 0 and distance < min_competitor_distance:
+                    min_competitor_distance = distance
+                idx += 1
+
+        # Якщо конкурент ближче — пропускаємо це значення
+        if min_competitor_distance < min_target_distance:
+            continue
+
+        # Всі перевірки пройдено — додаємо значення
+        original = f"{num}{unit}"
+        normalized = normalize_memory_value(f"{num} {unit}")
+        results.append((original, normalized))
+
+    return results
 
 
 # ===========================================================================
@@ -838,7 +986,9 @@ def _extract_for_rule(text: str, rule: dict) -> list[tuple[str, str]]:
     checker_type = rule.get("checker_type", "memory")
 
     if checker_type == "memory":
-        return extract_memory_matches(text)
+        # Використовуємо context-aware extraction якщо є ключові слова
+        context_keywords = rule.get("context_keywords")
+        return extract_memory_matches_with_context(text, context_keywords)
     if checker_type == "screen_diagonal":
         return extract_screen_diagonal_matches(text)
     if checker_type == "weight":
