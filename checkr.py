@@ -957,17 +957,20 @@ def normalize_gpu_model(gpu_str: str) -> str:
     Приклад:
         normalize_gpu_model("geforce rtx 5060 ti")  →  "GeForce RTX 5060 Ti"
         normalize_gpu_model("radeon rx 9070 xt")    →  "Radeon RX 9070 XT"
+        normalize_gpu_model("nvidia geforce rtx 5060 ti")  →  "GeForce RTX 5060 Ti"
     """
     # Видаляємо зайві пробіли
     gpu_str = " ".join(gpu_str.split())
     
+    # Видаляємо префікси виробника (nVidia, AMD) якщо вони є перед назвою серії
+    gpu_str = re.sub(r'\bnvidia\s+', '', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\bamd\s+(?=radeon)', '', gpu_str, flags=re.IGNORECASE)
+    
     # Нормалізуємо назви брендів та серій
-    gpu_str = re.sub(r'\bnvidia\b', 'nVidia', gpu_str, flags=re.IGNORECASE)
     gpu_str = re.sub(r'\bgeforce\b', 'GeForce', gpu_str, flags=re.IGNORECASE)
     gpu_str = re.sub(r'\brtx\b', 'RTX', gpu_str, flags=re.IGNORECASE)
     gpu_str = re.sub(r'\bgtx\b', 'GTX', gpu_str, flags=re.IGNORECASE)
     gpu_str = re.sub(r'\bquadro\b', 'Quadro', gpu_str, flags=re.IGNORECASE)
-    gpu_str = re.sub(r'\bamd\b', 'AMD', gpu_str, flags=re.IGNORECASE)
     gpu_str = re.sub(r'\bradeon\b', 'Radeon', gpu_str, flags=re.IGNORECASE)
     gpu_str = re.sub(r'\brx\b', 'RX', gpu_str, flags=re.IGNORECASE)
     gpu_str = re.sub(r'\bpro\b', 'Pro', gpu_str, flags=re.IGNORECASE)
