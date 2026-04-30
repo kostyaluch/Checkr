@@ -222,9 +222,9 @@ def extract_memory_matches_with_context(
 
     Алгоритм:
       1. Знаходить усі значення пам'яті у тексті.
-      2. Для кожного значення перевіряє наявність ключових слів у невеликому вікні
-         (до 30 символів до та після значення).
-      3. Повертає лише ті значення, поруч із якими є хоча б одне ключове слово.
+      2. Для кожного значення перевіряє, чи є хоча б одне ключове слово в радіусі 50 символів.
+      3. Додатково, якщо є конкуруючі ключові слова (SSD, RAM тощо) ближче ніж цільове,
+         значення не додається (щоб уникнути плутанини).
       4. Якщо context_keywords не вказано або порожній — повертає всі знайдені значення.
 
     Аргументи:
@@ -261,25 +261,86 @@ def extract_memory_matches_with_context(
     # Нормалізуємо ключові слова до нижнього регістру
     keywords_lower = [kw.lower() for kw in context_keywords]
 
-    results: list[tuple[str, str]] = []
+    # Список конкуруючих ключових слів (інші СПЕЦИФІЧНІ типи пам'яті, які НЕ є цільовими)
+    # Використовується для виключення значень, якщо інший тип пам'яті ближче
+    # НЕ включаємо загальні слова на кшталт "memory", "памят", тільки специфічні типи
+    competing_keywords = [
+        "ssd", "ссд", "накопичувач", "накопитель", "твердотіл", "твердотел",
+        "ram", "озу", "оперативн",
+        "vram", "відеопам", "видеопам",
+        "hdd", "жорстк", "жестк",
+    ]
+    
+    # Видаляємо з конкурентів ті, що є в цільових keywords
+    competitors = [kw for kw in competing_keywords if kw not in keywords_lower]
+    
     text_lower = text.lower()
+    results: list[tuple[str, str]] = []
 
     # Знаходимо всі збіги пам'яті
     for match in _MEMORY_RE.finditer(text):
         num, unit = match.groups()
-        start_pos = match.start()
-        end_pos = match.end()
+        value_start = match.start()
+        value_end = match.end()
 
-        # Визначаємо вікно контексту (30 символів до та після)
-        context_start = max(0, start_pos - 30)
-        context_end = min(len(text), end_pos + 30)
-        context = text_lower[context_start:context_end]
+        # Знаходимо найближче цільове ключове слово
+        # Пріоритет: спочатку шукаємо ПІСЛЯ значення (в межах 15 символів),
+        # потім ДО значення
+        min_target_distance = float('inf')
+        for keyword in keywords_lower:
+            idx = 0
+            while True:
+                idx = text_lower.find(keyword, idx)
+                if idx == -1:
+                    break
+                
+                # Відстань залежить від того, де знаходиться ключове слово
+                if idx >= value_end:
+                    # Ключове слово ПІСЛЯ значення - це найбільш природно
+                    distance = idx - value_end
+                    # Додаємо невеликий бонус (віднімаємо 5) якщо слово після
+                    # щоб "4 GB RAM" виграло проти "SSD ... 4 GB"
+                    distance = max(0, distance - 5)
+                else:
+                    # Ключове слово ДО значення
+                    distance = value_start - (idx + len(keyword))
+                
+                if distance >= 0 and distance < min_target_distance:
+                    min_target_distance = distance
+                idx += 1
 
-        # Перевіряємо наявність хоча б одного ключового слова в контексті
-        if any(kw in context for kw in keywords_lower):
-            original = f"{num}{unit}"
-            normalized = normalize_memory_value(f"{num} {unit}")
-            results.append((original, normalized))
+        # Якщо цільове ключове слово далі 50 символів — пропускаємо
+        if min_target_distance > 50:
+            continue
+
+        # Перевіряємо, чи немає конкуруючого ключового слова ближче
+        min_competitor_distance = float('inf')
+        for keyword in competitors:
+            idx = 0
+            while True:
+                idx = text_lower.find(keyword, idx)
+                if idx == -1:
+                    break
+                
+                # Така ж логіка для конкурентів
+                if idx >= value_end:
+                    distance = idx - value_end
+                    distance = max(0, distance - 5)
+                else:
+                    distance = value_start - (idx + len(keyword))
+                
+                if distance >= 0 and distance < min_competitor_distance:
+                    min_competitor_distance = distance
+                idx += 1
+
+        # Якщо конкурент ближче — пропускаємо це значення
+        if min_competitor_distance < min_target_distance:
+            continue
+
+        # Всі перевірки пройдено — додаємо значення
+        original = f"{num}{unit}"
+        normalized = normalize_memory_value(f"{num} {unit}")
+        results.append((original, normalized))
 
     return results
 

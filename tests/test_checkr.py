@@ -19,6 +19,7 @@ from checkr import (
     clean_html,
     extract_battery_matches,
     extract_memory_matches,
+    extract_memory_matches_with_context,
     extract_memory_values,
     extract_resolution_matches,
     extract_screen_diagonal_matches,
@@ -210,6 +211,105 @@ class TestExtractMemoryValues:
 
     def test_no_match(self):
         assert extract_memory_values("Просто текст") == []
+
+
+class TestExtractMemoryMatchesWithContext:
+    """Тести для контекстно-залежного витягування значень пам'яті."""
+
+    def test_ssd_context_filters_ssd_only(self):
+        # У тексті є і SSD, і RAM — витягуємо лише SSD
+        text = "Ноутбук із 512 ГБ SSD та 16 GB RAM"
+        matches = extract_memory_matches_with_context(text, ["SSD", "накопичувач"])
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == "512ГБ"
+
+    def test_ram_context_filters_ram_only(self):
+        # У тексті є і SSD, і RAM — витягуємо лише RAM
+        text = "Ноутбук із 512 ГБ SSD та 16 GB RAM"
+        matches = extract_memory_matches_with_context(text, ["RAM", "оперативн"])
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == "16ГБ"
+
+    def test_vram_context_filters_vram_only(self):
+        # Текст містить RAM та VRAM
+        text = "16 GB RAM, відеокарта з 8 ГБ VRAM"
+        matches = extract_memory_matches_with_context(text, ["VRAM", "відеопам"])
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == "8ГБ"
+
+    def test_no_context_returns_all(self):
+        # Без контексту повертаємо всі значення
+        text = "Ноутбук із 512 ГБ SSD та 16 GB RAM"
+        matches = extract_memory_matches_with_context(text, None)
+        assert len(matches) == 2
+        norms = [norm for _, norm in matches]
+        assert "512ГБ" in norms
+        assert "16ГБ" in norms
+
+    def test_empty_context_keywords_returns_all(self):
+        # Порожній список контексту працює як None
+        text = "Ноутбук із 512 ГБ SSD та 16 GB RAM"
+        matches = extract_memory_matches_with_context(text, [])
+        assert len(matches) == 2
+
+    def test_case_insensitive_context(self):
+        # Контекст нечутливий до регістру
+        text = "Ноутбук із 512 gb ssd та 16 GB ram"
+        matches = extract_memory_matches_with_context(text, ["SSD"])
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == "512ГБ"
+
+    def test_context_window_30_chars(self):
+        # Ключове слово має бути в межах 30 символів від значення
+        # "SSD" далеко від першого значення, але близько до другого
+        text = "Ноутбук з 16 GB оперативної пам'яті та потужний 512 ГБ SSD-накопичувач"
+        matches = extract_memory_matches_with_context(text, ["SSD"])
+        # Повинно знайтися лише 512 ГБ
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == "512ГБ"
+
+    def test_multiple_keywords_any_matches(self):
+        # Якщо є будь-яке з ключових слів — знаходимо
+        text = "Твердотілий накопичувач 256 ГБ"
+        matches = extract_memory_matches_with_context(
+            text, ["SSD", "твердотіл", "накопичувач"]
+        )
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == "256ГБ"
+
+    def test_no_matches_without_context_keyword(self):
+        # Якщо ключове слово відсутнє — нічого не знаходимо
+        text = "Ноутбук із 512 ГБ внутрішньої пам'яті"
+        matches = extract_memory_matches_with_context(text, ["SSD"])
+        assert len(matches) == 0
+
+    def test_cyrillic_keywords(self):
+        # Підтримка кириличних ключових слів
+        text = "Ноутбук з оперативною пам'яттю 16 ГБ"
+        matches = extract_memory_matches_with_context(text, ["оперативн"])
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == "16ГБ"
+
+    def test_mixed_language_text_and_keywords(self):
+        # Текст змішаною мовою, ключові слова обома мовами
+        text = "Laptop with 512 GB SSD та 16 ГБ RAM"
+        matches = extract_memory_matches_with_context(text, ["SSD", "ССД"])
+        assert len(matches) == 1
+        _, norm = matches[0]
+        assert norm == "512ГБ"
+
+    def test_empty_text(self):
+        assert extract_memory_matches_with_context("", ["SSD"]) == []
+
+    def test_none_text(self):
+        assert extract_memory_matches_with_context(None, ["SSD"]) == []
 
 
 # ===========================================================================
@@ -627,6 +727,50 @@ class TestCheckConflicts:
         error, cols = check_conflicts(row, list(row.index), self._ram_rule())
         assert error != ""
         assert "Конфлікт RAM" in error
+
+    def test_no_conflict_ssd_with_ram_in_text(self):
+        """Тест на фікс головного бага: SSD не конфліктує з RAM у тексті."""
+        # Описание містить 16 ГБ RAM, але SSD = 512 ГБ
+        # Раніше програма помилково знаходила конфлікт між "16 ГБ" та "512 ГБ"
+        row = pd.Series({
+            "Описание;1": "<p>Ноутбук із <strong>512 ГБ</strong> SSD та <em>16 GB</em> оперативної пам'яті.</p>",
+            "Объём SSD;115411": "512 ГБ",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._ssd_rule())
+        # Не повинно бути конфлікту, бо 16 GB стосується RAM, а не SSD
+        assert error == ""
+        assert cols == []
+
+    def test_no_conflict_ram_with_ssd_in_text(self):
+        """RAM не конфліктує з SSD у тексті."""
+        row = pd.Series({
+            "Название": "Ноутбук 512 ГБ SSD 16 GB RAM",
+            "Объем установленной оперативной памяти;20863": "16 GB",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._ram_rule())
+        # Не повинно бути конфлікту, бо 512 ГБ стосується SSD, а не RAM
+        assert error == ""
+        assert cols == []
+
+    def test_ssd_conflict_ignores_vram(self):
+        """SSD ігнорує VRAM у тексті."""
+        row = pd.Series({
+            "Описание;1": "Ноутбук з 1 ТБ SSD та відеокартою 8 ГБ VRAM",
+            "Объём SSD;115411": "1 ТБ",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._ssd_rule())
+        assert error == ""
+        assert cols == []
+
+    def test_real_ssd_conflict_still_detected(self):
+        """Справжній конфлікт SSD все ще виявляється."""
+        row = pd.Series({
+            "Название": "Ноутбук 256 ГБ SSD",
+            "Объём SSD;115411": "512 ГБ",
+        })
+        error, cols = check_conflicts(row, list(row.index), self._ssd_rule())
+        assert error != ""
+        assert "256ГБ" in error or "256 ГБ" in error
 
 
 # ===========================================================================
