@@ -212,6 +212,78 @@ def extract_memory_values(text: str) -> list[str]:
     return [norm for _, norm in extract_memory_matches(text)]
 
 
+def extract_memory_matches_with_context(
+    text: str, context_keywords: list[str] | None = None
+) -> list[tuple[str, str]]:
+    """Знаходить значення об'єму пам'яті у тексті з урахуванням контексту.
+
+    Якщо вказані ключові слова (context_keywords), повертає лише ті значення пам'яті,
+    які знаходяться поруч із цими словами. Це дозволяє розрізняти RAM, SSD, VRAM тощо.
+
+    Алгоритм:
+      1. Знаходить усі значення пам'яті у тексті.
+      2. Для кожного значення перевіряє наявність ключових слів у невеликому вікні
+         (до 30 символів до та після значення).
+      3. Повертає лише ті значення, поруч із якими є хоча б одне ключове слово.
+      4. Якщо context_keywords не вказано або порожній — повертає всі знайдені значення.
+
+    Аргументи:
+        text:             Рядок, у якому шукаємо значення.
+        context_keywords: Список ключових слів для фільтрації (наприклад, ["SSD", "накопичувач"]).
+                          Пошук нечутливий до регістру.
+
+    Повертає:
+        Список пар (оригінал, нормалізоване). Порожній список, якщо нічого не знайдено.
+
+    Приклад:
+        extract_memory_matches_with_context(
+            "Ноутбук із 512 ГБ SSD та 16 GB RAM",
+            ["SSD", "накопичувач"]
+        )
+        →  [("512 ГБ", "512ГБ")]  # Лише SSD, RAM ігнорується
+
+        extract_memory_matches_with_context(
+            "Ноутбук із 512 ГБ SSD та 16 GB RAM",
+            ["RAM", "оперативна", "оперативной"]
+        )
+        →  [("16 GB", "16ГБ")]  # Лише RAM, SSD ігнорується
+
+        extract_memory_matches_with_context("Ноутбук 512 ГБ SSD", None)
+        →  [("512 ГБ", "512ГБ")]  # Без фільтрації
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+
+    # Якщо контекст не вказано — повертаємо всі значення
+    if not context_keywords:
+        return extract_memory_matches(text)
+
+    # Нормалізуємо ключові слова до нижнього регістру
+    keywords_lower = [kw.lower() for kw in context_keywords]
+
+    results: list[tuple[str, str]] = []
+    text_lower = text.lower()
+
+    # Знаходимо всі збіги пам'яті
+    for match in _MEMORY_RE.finditer(text):
+        num, unit = match.groups()
+        start_pos = match.start()
+        end_pos = match.end()
+
+        # Визначаємо вікно контексту (30 символів до та після)
+        context_start = max(0, start_pos - 30)
+        context_end = min(len(text), end_pos + 30)
+        context = text_lower[context_start:context_end]
+
+        # Перевіряємо наявність хоча б одного ключового слова в контексті
+        if any(kw in context for kw in keywords_lower):
+            original = f"{num}{unit}"
+            normalized = normalize_memory_value(f"{num} {unit}")
+            results.append((original, normalized))
+
+    return results
+
+
 # ===========================================================================
 # Модуль 3: Пошук колонок у DataFrame
 # ===========================================================================
@@ -838,7 +910,9 @@ def _extract_for_rule(text: str, rule: dict) -> list[tuple[str, str]]:
     checker_type = rule.get("checker_type", "memory")
 
     if checker_type == "memory":
-        return extract_memory_matches(text)
+        # Використовуємо context-aware extraction якщо є ключові слова
+        context_keywords = rule.get("context_keywords")
+        return extract_memory_matches_with_context(text, context_keywords)
     if checker_type == "screen_diagonal":
         return extract_screen_diagonal_matches(text)
     if checker_type == "weight":
