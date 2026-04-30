@@ -798,6 +798,327 @@ def extract_value_list_matches(
     return results
 
 
+# ---------------------------------------------------------------------------
+# Модель процесора (CPU)
+# ---------------------------------------------------------------------------
+
+# Регулярний вираз для пошуку моделей процесорів Intel та AMD.
+# Підтримує:
+#   Intel: Core i3/i5/i7/i9, Core Ultra, Pentium, Celeron, Core 5/7
+#   AMD: Ryzen 3/5/7/9, Threadripper, Athlon
+# Приклади:
+#   "Intel Core i7-12700F", "AMD Ryzen 5 7520U", "Intel Core Ultra 5 125H"
+_CPU_MODEL_RE = re.compile(
+    r"""
+    (?:Intel|AMD)\s+                          # Виробник (обов'язково)
+    (?:
+        # Intel: Core i3/i5/i7/i9 + модель
+        Core\s+[iI](?:3|5|7|9)[-\s]*\d+[A-Z]*
+        |
+        # Intel: Core Ultra + число + модель
+        Core\s+Ultra\s+(?:X)?(?:3|5|7|9)\s+\d+[A-Z]*
+        |
+        # Intel: Core 5/7 + модель (нові процесори)
+        Core\s+(?:3|5|7|9)\s+(?:processor\s+)?\d+[A-Z]*
+        |
+        # Intel: Pentium, Celeron + модель
+        (?:Pentium|Celeron)(?:\s+(?:Gold|Silver))?\s+[A-Z]?\d+[A-Z]*
+        |
+        # AMD: Ryzen 3/5/7/9 + модель
+        Ryzen\s+(?:3|5|7|9)\s+\d+[A-Z]*
+        |
+        # AMD: Threadripper + модель
+        Threadripper\s+\d+[A-Z]*
+        |
+        # AMD: Athlon + модель
+        Athlon(?:\s+(?:Gold|Silver))?\s+\d+[A-Z]*
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE | re.UNICODE,
+)
+
+
+def normalize_cpu_model(cpu_str: str) -> str:
+    """Нормалізує модель процесора до стандартного формату.
+
+    Видаляє зайві пробіли, приводить виробника до стандартного регістру.
+
+    Аргументи:
+        cpu_str: Оригінальний рядок з моделлю процесора.
+
+    Повертає:
+        Нормалізований рядок (наприклад, "Intel Core i7-12700F").
+
+    Приклад:
+        normalize_cpu_model("intel core i7-12700f")  →  "Intel Core i7-12700F"
+        normalize_cpu_model("AMD ryzen 5 7520U")     →  "AMD Ryzen 5 7520U"
+    """
+    # Видаляємо зайві пробіли
+    cpu_str = " ".join(cpu_str.split())
+    
+    # Приводимо виробника до стандартного регістру
+    if cpu_str.lower().startswith("intel"):
+        cpu_str = "Intel" + cpu_str[5:]
+    elif cpu_str.lower().startswith("amd"):
+        cpu_str = "AMD" + cpu_str[3:]
+    
+    # Нормалізуємо "Core i7", "Ryzen 5", тощо
+    cpu_str = re.sub(r'\bcore\b', 'Core', cpu_str, flags=re.IGNORECASE)
+    cpu_str = re.sub(r'\bpentium\b', 'Pentium', cpu_str, flags=re.IGNORECASE)
+    cpu_str = re.sub(r'\bceleron\b', 'Celeron', cpu_str, flags=re.IGNORECASE)
+    cpu_str = re.sub(r'\bryzen\b', 'Ryzen', cpu_str, flags=re.IGNORECASE)
+    cpu_str = re.sub(r'\bathlon\b', 'Athlon', cpu_str, flags=re.IGNORECASE)
+    cpu_str = re.sub(r'\bthreadripper\b', 'Threadripper', cpu_str, flags=re.IGNORECASE)
+    cpu_str = re.sub(r'\bultra\b', 'Ultra', cpu_str, flags=re.IGNORECASE)
+    cpu_str = re.sub(r'\bgold\b', 'Gold', cpu_str, flags=re.IGNORECASE)
+    cpu_str = re.sub(r'\bsilver\b', 'Silver', cpu_str, flags=re.IGNORECASE)
+    cpu_str = re.sub(r'\bprocessor\b', 'processor', cpu_str, flags=re.IGNORECASE)
+    
+    return cpu_str
+
+
+def extract_cpu_model_matches(text: str) -> list[tuple[str, str]]:
+    """Знаходить усі моделі процесорів у тексті.
+
+    Аргументи:
+        text: Рядок для пошуку.
+
+    Повертає:
+        Список пар (оригінал, нормалізована_модель).
+        Порожній список, якщо моделей не знайдено.
+
+    Приклад:
+        extract_cpu_model_matches("Ноутбук з Intel Core i7-12700F процесором")
+        →  [('Intel Core i7-12700F', 'Intel Core i7-12700F')]
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+
+    results: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    for match in _CPU_MODEL_RE.finditer(text):
+        original = match.group(0)
+        normalized = normalize_cpu_model(original)
+        
+        if normalized not in seen:
+            results.append((original, normalized))
+            seen.add(normalized)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Модель відеокарти (GPU)
+# ---------------------------------------------------------------------------
+
+# Регулярний вираз для пошуку моделей відеокарт.
+# Підтримує:
+#   nVidia: GeForce RTX/GTX, Quadro
+#   AMD: Radeon RX/Pro
+#   Intel: Arc, HD Graphics, UHD Graphics, Iris
+# Приклади:
+#   "GeForce RTX 5060 Ti", "Radeon RX 9070 XT", "Intel Arc Graphics"
+_GPU_MODEL_RE = re.compile(
+    r"""
+    (?:
+        # nVidia GeForce
+        (?:nVidia\s+)?GeForce\s+(?:RTX|GTX)\s+\d+(?:\s+Ti)?
+        |
+        # nVidia Quadro
+        (?:nVidia\s+)?Quadro\s+[A-Z]*\d+
+        |
+        # AMD Radeon
+        (?:AMD\s+)?Radeon\s+(?:RX|Pro)\s+\d+(?:\s+XT)?
+        |
+        # Intel Arc
+        Intel\s+Arc\s+(?:Graphics|[A-Z]\d+)
+        |
+        # Intel HD/UHD Graphics
+        Intel\s+(?:HD|UHD)\s+Graphics(?:\s+\d+)?
+        |
+        # Intel Iris
+        Intel\s+Iris(?:\s+(?:Xe|Plus|Pro))?\s*(?:Graphics)?(?:\s+\d+)?
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE | re.UNICODE,
+)
+
+
+def normalize_gpu_model(gpu_str: str) -> str:
+    """Нормалізує модель відеокарти до стандартного формату.
+
+    Аргументи:
+        gpu_str: Оригінальний рядок з моделлю відеокарти.
+
+    Повертає:
+        Нормалізований рядок.
+
+    Приклад:
+        normalize_gpu_model("geforce rtx 5060 ti")  →  "GeForce RTX 5060 Ti"
+        normalize_gpu_model("radeon rx 9070 xt")    →  "Radeon RX 9070 XT"
+    """
+    # Видаляємо зайві пробіли
+    gpu_str = " ".join(gpu_str.split())
+    
+    # Нормалізуємо назви брендів та серій
+    gpu_str = re.sub(r'\bnvidia\b', 'nVidia', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\bgeforce\b', 'GeForce', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\brtx\b', 'RTX', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\bgtx\b', 'GTX', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\bquadro\b', 'Quadro', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\bamd\b', 'AMD', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\bradeon\b', 'Radeon', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\brx\b', 'RX', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\bpro\b', 'Pro', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\bintel\b', 'Intel', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\barc\b', 'Arc', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\bhd\b', 'HD', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\buhd\b', 'UHD', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\biris\b', 'Iris', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\bgraphics\b', 'Graphics', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\bti\b', 'Ti', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\bxt\b', 'XT', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\bxe\b', 'Xe', gpu_str, flags=re.IGNORECASE)
+    gpu_str = re.sub(r'\bplus\b', 'Plus', gpu_str, flags=re.IGNORECASE)
+    
+    return gpu_str
+
+
+def extract_gpu_model_matches(text: str) -> list[tuple[str, str]]:
+    """Знаходить усі моделі відеокарт у тексті.
+
+    Аргументи:
+        text: Рядок для пошуку.
+
+    Повертає:
+        Список пар (оригінал, нормалізована_модель).
+        Порожній список, якщо моделей не знайдено.
+
+    Приклад:
+        extract_gpu_model_matches("nVidia GeForce RTX 5060 Ti, 16 ГБ")
+        →  [('GeForce RTX 5060 Ti', 'GeForce RTX 5060 Ti')]
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+
+    results: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    for match in _GPU_MODEL_RE.finditer(text):
+        original = match.group(0)
+        normalized = normalize_gpu_model(original)
+        
+        if normalized not in seen:
+            results.append((original, normalized))
+            seen.add(normalized)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Операційна система (OS)
+# ---------------------------------------------------------------------------
+
+# Регулярний вираз для пошуку операційних систем.
+# Підтримує: Windows, Linux, macOS, DOS
+_OS_RE = re.compile(
+    r"""
+    (?:
+        # Windows з версією
+        Windows\s+(?:
+            11|10|8\.1|8|7|Vista|XP|2000
+        )(?:\s+(?:Home|Pro|Enterprise|Education|S))?
+        |
+        # macOS
+        macOS(?:\s+(?:Ventura|Monterey|Big\s+Sur|Catalina|Mojave|High\s+Sierra|Sierra))?
+        |
+        # Linux дистрибутиви
+        (?:Ubuntu|Debian|Fedora|CentOS|Red\s+Hat|Arch|Linux)(?:\s+\d+(?:\.\d+)?)?
+        |
+        # FreeDOS / DOS
+        (?:Free)?DOS
+        |
+        # Без ОС
+        без\s+О[СД]|без\s+операц[іи]йно[їі]\s+систем[иы]
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE | re.UNICODE,
+)
+
+
+def normalize_os(os_str: str) -> str:
+    """Нормалізує назву операційної системи до стандартного формату.
+
+    Аргументи:
+        os_str: Оригінальний рядок з назвою ОС.
+
+    Повертає:
+        Нормалізований рядок.
+
+    Приклад:
+        normalize_os("windows 11 home")  →  "Windows 11 Home"
+        normalize_os("MACOS")            →  "macOS"
+    """
+    # Видаляємо зайві пробіли
+    os_str = " ".join(os_str.split())
+    
+    # Нормалізуємо Windows
+    os_str = re.sub(r'\bwindows\b', 'Windows', os_str, flags=re.IGNORECASE)
+    os_str = re.sub(r'\bhome\b', 'Home', os_str, flags=re.IGNORECASE)
+    os_str = re.sub(r'\bpro\b', 'Pro', os_str, flags=re.IGNORECASE)
+    os_str = re.sub(r'\benterprise\b', 'Enterprise', os_str, flags=re.IGNORECASE)
+    os_str = re.sub(r'\beducation\b', 'Education', os_str, flags=re.IGNORECASE)
+    
+    # Нормалізуємо macOS
+    if os_str.lower().startswith('macos'):
+        os_str = 'macOS' + os_str[5:]
+    
+    # Нормалізуємо Linux
+    os_str = re.sub(r'\bubuntu\b', 'Ubuntu', os_str, flags=re.IGNORECASE)
+    os_str = re.sub(r'\bdebian\b', 'Debian', os_str, flags=re.IGNORECASE)
+    os_str = re.sub(r'\bfedora\b', 'Fedora', os_str, flags=re.IGNORECASE)
+    os_str = re.sub(r'\blinux\b', 'Linux', os_str, flags=re.IGNORECASE)
+    
+    # Нормалізуємо DOS
+    os_str = re.sub(r'\b(?:free)?dos\b', 'DOS', os_str, flags=re.IGNORECASE)
+    if 'free' in os_str.lower() and 'dos' in os_str.lower():
+        os_str = 'FreeDOS'
+    
+    return os_str
+
+
+def extract_os_matches(text: str) -> list[tuple[str, str]]:
+    """Знаходить усі операційні системи у тексті.
+
+    Аргументи:
+        text: Рядок для пошуку.
+
+    Повертає:
+        Список пар (оригінал, нормалізована_ОС).
+        Порожній список, якщо ОС не знайдено.
+
+    Приклад:
+        extract_os_matches("Ноутбук з Windows 11 Home")
+        →  [('Windows 11 Home', 'Windows 11 Home')]
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+
+    results: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    for match in _OS_RE.finditer(text):
+        original = match.group(0)
+        normalized = normalize_os(original)
+        
+        if normalized not in seen:
+            results.append((original, normalized))
+            seen.add(normalized)
+
+    return results
+
+
 # ===========================================================================
 # Модуль 2c: Допоміжні функції витягування канонічного значення та диспетчер
 # ===========================================================================
@@ -968,6 +1289,18 @@ def _normalize_canonical(raw: str, rule: dict) -> str | None:
                 return val.upper()
         return None
 
+    if checker_type == "cpu_model":
+        matches = extract_cpu_model_matches(raw)
+        return matches[0][1] if matches else None
+
+    if checker_type == "gpu_model":
+        matches = extract_gpu_model_matches(raw)
+        return matches[0][1] if matches else None
+
+    if checker_type == "os":
+        matches = extract_os_matches(raw)
+        return matches[0][1] if matches else None
+
     return None
 
 
@@ -999,6 +1332,12 @@ def _extract_for_rule(text: str, rule: dict) -> list[tuple[str, str]]:
         return extract_resolution_matches(text)
     if checker_type == "value_list":
         return extract_value_list_matches(text, rule.get("valid_values", []))
+    if checker_type == "cpu_model":
+        return extract_cpu_model_matches(text)
+    if checker_type == "gpu_model":
+        return extract_gpu_model_matches(text)
+    if checker_type == "os":
+        return extract_os_matches(text)
 
     return []
 
