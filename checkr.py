@@ -15,6 +15,7 @@
 
 import argparse
 import itertools
+import math
 import re
 import sys
 from pathlib import Path
@@ -26,6 +27,19 @@ from openpyxl.styles import PatternFill
 
 from validation_rules import VALIDATION_RULES
 from language_detector import check_language_consistency
+
+# ---------------------------------------------------------------------------
+# Константи: параметри контекстно-залежного пошуку пам'яті
+# ---------------------------------------------------------------------------
+
+# Бонус відстані для ключових слів, що йдуть ПІСЛЯ значення пам'яті.
+# Наприклад, "16 GB RAM" — слово "RAM" йде після значення.
+# Цей бонус дає пріоритет таким випадкам перед "SSD ... 16 GB".
+KEYWORD_AFTER_VALUE_BONUS = 5
+
+# Максимальна відстань (у символах) між значенням пам'яті та ключовим словом.
+# Якщо ключове слово далі — воно не враховується.
+MAX_CONTEXT_DISTANCE = 50
 
 # ---------------------------------------------------------------------------
 # Константи: кольори для підсвітки у вихідному Excel-файлі
@@ -222,7 +236,8 @@ def extract_memory_matches_with_context(
 
     Алгоритм:
       1. Знаходить усі значення пам'яті у тексті.
-      2. Для кожного значення перевіряє, чи є хоча б одне ключове слово в радіусі 50 символів.
+      2. Для кожного значення перевіряє, чи є хоча б одне ключове слово в радіусі
+         MAX_CONTEXT_DISTANCE символів (після коригування відстані).
       3. Додатково, якщо є конкуруючі ключові слова (SSD, RAM тощо) ближче ніж цільове,
          значення не додається (щоб уникнути плутанини).
       4. Якщо context_keywords не вказано або порожній — повертає всі знайдені значення.
@@ -286,7 +301,7 @@ def extract_memory_matches_with_context(
         # Знаходимо найближче цільове ключове слово
         # Пріоритет: спочатку шукаємо ПІСЛЯ значення (в межах 15 символів),
         # потім ДО значення
-        min_target_distance = float('inf')
+        min_target_distance = math.inf
         for keyword in keywords_lower:
             idx = 0
             while True:
@@ -298,9 +313,9 @@ def extract_memory_matches_with_context(
                 if idx >= value_end:
                     # Ключове слово ПІСЛЯ значення - це найбільш природно
                     distance = idx - value_end
-                    # Додаємо невеликий бонус (віднімаємо 5) якщо слово після
+                    # Застосовуємо бонус для слів після значення
                     # щоб "4 GB RAM" виграло проти "SSD ... 4 GB"
-                    distance = max(0, distance - 5)
+                    distance = max(0, distance - KEYWORD_AFTER_VALUE_BONUS)
                 else:
                     # Ключове слово ДО значення
                     distance = value_start - (idx + len(keyword))
@@ -309,12 +324,12 @@ def extract_memory_matches_with_context(
                     min_target_distance = distance
                 idx += 1
 
-        # Якщо цільове ключове слово далі 50 символів — пропускаємо
-        if min_target_distance > 50:
+        # Якщо цільове ключове слово далі MAX_CONTEXT_DISTANCE — пропускаємо
+        if min_target_distance > MAX_CONTEXT_DISTANCE:
             continue
 
         # Перевіряємо, чи немає конкуруючого ключового слова ближче
-        min_competitor_distance = float('inf')
+        min_competitor_distance = math.inf
         for keyword in competitors:
             idx = 0
             while True:
@@ -325,7 +340,7 @@ def extract_memory_matches_with_context(
                 # Така ж логіка для конкурентів
                 if idx >= value_end:
                     distance = idx - value_end
-                    distance = max(0, distance - 5)
+                    distance = max(0, distance - KEYWORD_AFTER_VALUE_BONUS)
                 else:
                     distance = value_start - (idx + len(keyword))
                 
